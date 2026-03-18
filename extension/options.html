@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AutoLearning 设置</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <main class="page">
+      <section class="hero">
+        <p class="eyebrow">AutoLearning</p>
+        <h1>浏览器插件设置</h1>
+        <p class="hero-text">
+          填好模型接口之后，插件就可以在题目页里直接识别题面、生成答案并填充回编辑器。
+        </p>
+      </section>
+
+      <section class="card">
+        <form id="settings-form" class="form">
+          <label class="field">
+            <span>Base URL</span>
+            <input
+              id="baseUrl"
+              name="baseUrl"
+              type="url"
+              placeholder="https://api.openai.com/v1"
+              required
+            />
+            <small>支持 OpenAI / OpenRouter / 其他 OpenAI 兼容接口。</small>
+          </label>
+
+          <label class="field">
+            <span>API Key</span>
+            <input
+              id="apiKey"
+              name="apiKey"
+              type="password"
+              placeholder="sk-..."
+              autocomplete="off"
+            />
+            <small>保存在当前浏览器本地，不会写进这个仓库。</small>
+          </label>
+
+          <label class="field">
+            <span>Model</span>
+            <input
+              id="model"
+              name="model"
+              type="text"
+              placeholder="gpt-4.1-mini"
+              required
+            />
+          </label>
+
+          <label class="field">
+            <span>额外提示词</span>
+            <textarea
+              id="extraInstructions"
+              name="extraInstructions"
+              rows="6"
+              placeholder="例如：优先用 C 语言，保留我已有的函数签名。"
+            ></textarea>
+            <small>这里适合放你的长期偏好，比如语言风格、输出习惯、注释要求。</small>
+          </label>
+
+          <label class="toggle-field" for="includeScreenshotInSolver">
+            <span class="toggle-copy">
+              <strong>生成答案时附带截图</strong>
+              <small>默认关闭。只有当解题模型支持图片输入时才建议开启，比如 Gemini Flash 这类多模态模型。</small>
+            </span>
+            <input
+              id="includeScreenshotInSolver"
+              name="includeScreenshotInSolver"
+              type="checkbox"
+            />
+          </label>
+
+          <label class="toggle-field" for="autoSolveAfterCapture">
+            <span class="toggle-copy">
+              <strong>截图后立刻开始生成</strong>
+              <small>开启后，截图完成会自动开始生成答案。直接发图模式会立刻发图，OCR 模式会在 OCR 完成后自动开始。</small>
+            </span>
+            <input
+              id="autoSolveAfterCapture"
+              name="autoSolveAfterCapture"
+              type="checkbox"
+            />
+          </label>
+
+          <label class="field">
+            <span>截图快捷键</span>
+            <input
+              id="screenshotShortcut"
+              name="screenshotShortcut"
+              type="text"
+              placeholder="Alt+Shift+S"
+            />
+            <small>支持类似 `Alt+Shift+S`、`Ctrl+Shift+X`、`Meta+Shift+S` 的写法。留空会恢复默认快捷键。</small>
+          </label>
+
+          <label class="field">
+            <span>整页截图快捷键</span>
+            <input
+              id="fullPageScreenshotShortcut"
+              name="fullPageScreenshotShortcut"
+              type="text"
+              placeholder="Alt+Shift+F"
+            />
+            <small>按下后会直接截取当前标签页可见区域，不需要框选。</small>
+          </label>
+
+          <label class="toggle-field" for="autoSubmitAfterFullCapture">
+            <span class="toggle-copy">
+              <strong>整页截图后自动提交</strong>
+              <small>默认关闭。开启后，整页截图快捷键会自动截图、生成答案、填回编辑器并尝试点击页面上的“评测并提交”或“提交”按钮。</small>
+            </span>
+            <input
+              id="autoSubmitAfterFullCapture"
+              name="autoSubmitAfterFullCapture"
+              type="checkbox"
+            />
+          </label>
+
+          <label class="field">
+            <span>OCR Base URL</span>
+            <input
+              id="ocrBaseUrl"
+              name="ocrBaseUrl"
+              type="url"
+              placeholder="https://api.openai.com/v1"
+            />
+            <small>单独给 OCR 用的多模态接口地址，留空则不启用 OCR。</small>
+          </label>
+
+          <label class="field">
+            <span>OCR API Key</span>
+            <input
+              id="ocrApiKey"
+              name="ocrApiKey"
+              type="password"
+              placeholder="sk-..."
+              autocomplete="off"
+            />
+          </label>
+
+          <label class="field">
+            <span>OCR Model</span>
+            <input
+              id="ocrModel"
+              name="ocrModel"
+              type="text"
+              placeholder="gpt-4.1-mini"
+            />
+            <small>这里填支持图片输入的模型。</small>
+          </label>
+
+          <label class="field">
+            <span>OCR 提示词</span>
+            <textarea
+              id="ocrPrompt"
+              name="ocrPrompt"
+              rows="4"
+              placeholder="请只做 OCR，尽量完整提取图片中的文字与公式，只返回纯文本。"
+            ></textarea>
+            <small>给 OCR 模型的专用提示词，建议只让它返回纯文本。</small>
+          </label>
+
+          <div class="actions">
+            <button type="submit" class="primary">保存设置</button>
+            <button type="button" id="reset" class="secondary">恢复默认</button>
+          </div>
+
+          <p id="status" class="status" aria-live="polite"></p>
+        </form>
+      </section>
+    </main>
+
+    <script src="options.js"></script>
+  </body>
+</html>

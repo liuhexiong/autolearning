@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "AutoLearning MVP",
+  "version": "0.1.0",
+  "description": "识别算法题面、读取编辑器代码、调用大模型并回填代码的学习辅助插件。",
+  "permissions": ["storage", "clipboardRead", "clipboardWrite", "activeTab", "tabs"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "AutoLearning"
+  },
+  "options_page": "options.html",
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["page-bridge.js"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}
