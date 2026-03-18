@@ -12,12 +12,17 @@
   const STYLE_ID = "autolearning-style";
   const HOST_ID = "autolearning-host";
   const POSITION_STORAGE_KEY = "autolearningLauncherPosition";
+  const FIXED_CAPTURE_STORAGE_KEY = "autolearningFixedCaptureRegions";
   const LAUNCHER_SIZE = 52;
   const PANEL_GAP = 12;
   const PANEL_MAX_WIDTH = 420;
   const MOBILE_BREAKPOINT = 720;
   const DRAG_THRESHOLD = 6;
   const PANEL_VISIBLE_STRIP = 72;
+  const DEFAULT_CHOICE_PROMPT =
+    "当前页面大概率是选择题、判断题、概念题或简答型理论题。请优先输出最终答案，而不是写完整程序。若题目是单选题，code 字段只放最终选项，例如 A、B、C、D；若是多选题，code 字段只放选项组合，例如 AC；若是判断题，code 字段只放“对”或“错”；若是简短填空或概念问答，code 字段只放最终可直接填写的简短答案。不要输出 main 函数，不要伪造代码。approach 用 3 到 5 句简洁说明你的判断依据，重点使用关键词匹配、概念定义和排除法。";
+  const DEFAULT_CODE_PROMPT =
+    "当前页面大概率是编程题、代码填空题或需要补全模板的题。请优先保留题目指定语言、函数签名、输入输出格式和已有代码骨架，只补上真正缺失的部分。若页面自带代码与题面冲突，优先相信题面和样例。code 字段只放最终可提交或可复制的内容，不要在 code 里混入解释。尽量给出最稳妥、最容易通过样例和评测的做法。";
 
   const state = {
     mounted: false,
@@ -40,7 +45,11 @@
     noticeTimer: 0,
     promptPreview: null,
     screenshotShortcutInstalled: false,
+    fixedCaptureRegion: null,
     settings: {
+      promptMode: "code",
+      extraInstructionsChoice: DEFAULT_CHOICE_PROMPT,
+      extraInstructionsCode: DEFAULT_CODE_PROMPT,
       includeScreenshotInSolver: false,
       autoSolveAfterCapture: false,
       screenshotShortcut: "Alt+Shift+S",
@@ -56,7 +65,7 @@
   observePageChanges();
 
   function bootstrap() {
-    if (state.mounted || !looksLikeSupportedPage()) {
+    if (state.mounted) {
       return;
     }
 
@@ -64,14 +73,15 @@
     mountUi();
     installAutoClipboardSync();
     installScreenshotShortcut();
-    renderSummary("点击“识别题面”开始提取当前页面内容。");
+    void hydrateFixedCaptureRegion();
+    renderSummary("插件已在当前页面就绪。你可以直接截图、读剪贴板，或先识别当前页面内容。");
     renderGeneratedTitle("");
     renderCurrentClassification(null);
     renderPromptPreview("还没有可预览的内容。");
     renderScreenshotStatus(null);
     renderOcrText("");
     renderHistory([]);
-    setStatus("插件已就绪。");
+    setStatus("插件已在当前网站启用。");
   }
 
   function observePageChanges() {
@@ -89,6 +99,8 @@
         renderPromptPreview("页面已切换，等待重新提取当前关卡内容。");
         renderScreenshotStatus(null);
         renderOcrText("");
+        state.fixedCaptureRegion = null;
+        void hydrateFixedCaptureRegion();
       }
       bootstrap();
     });
@@ -112,42 +124,11 @@
         renderPromptPreview("页面已切换，等待重新提取当前关卡内容。");
         renderScreenshotStatus(null);
         renderOcrText("");
+        state.fixedCaptureRegion = null;
+        void hydrateFixedCaptureRegion();
       }
       bootstrap();
     }, 1200);
-  }
-
-  function looksLikeSupportedPage() {
-    const editorSignals = [
-      ".monaco-editor",
-      ".CodeMirror",
-      ".ace_editor",
-      "textarea",
-      ".cm-content",
-    ];
-    const hasEditor = editorSignals.some((selector) => document.querySelector(selector));
-    if (!hasEditor) {
-      return false;
-    }
-
-    const quickText = normalizeText(document.body?.innerText || "").slice(0, 5000);
-    const problemKeywords = [
-      "任务描述",
-      "题目描述",
-      "问题描述",
-      "学习内容",
-      "输入描述",
-      "输出描述",
-      "示例",
-      "样例",
-      "时间限制",
-      "Input",
-      "Output",
-      "Example",
-      "Constraints",
-    ];
-
-    return problemKeywords.some((keyword) => quickText.includes(keyword));
   }
 
   function mountUi() {
@@ -172,22 +153,34 @@
 
           <div class="al-actions">
             <button data-role="solve" type="button" class="al-primary">生成答案</button>
-            <button data-role="capture" type="button">截图题面</button>
+            <button data-role="capture" type="button">框选截图</button>
+            <button data-role="define-capture-region" type="button">设定区域</button>
             <button data-role="settings" type="button">设置</button>
             <button data-role="paste-code" type="button">读取剪贴板代码</button>
           </div>
 
+          <section class="al-section" data-role="choice-answer-wrap" hidden>
+            <div class="al-code-head">
+              <h3>最终答案</h3>
+              <button data-role="copy-choice-answer" type="button" class="al-link">复制</button>
+            </div>
+            <div data-role="choice-answer" class="al-choice-answer">还没有生成答案。</div>
+          </section>
+
+          <section class="al-section" data-role="approach-wrap">
+            <h3>解题思路</h3>
+            <div class="al-result" data-role="approach">还没有生成内容。</div>
+          </section>
+
           <section class="al-section">
             <div class="al-code-head">
-              <h3>额外提示词</h3>
-              <button data-role="save-prompt" type="button" class="al-link">保存</button>
+              <h3>答题模式</h3>
+              <div class="al-mode-switch" data-role="prompt-mode-switch">
+                <button data-role="prompt-mode-choice" type="button" class="al-mode-button">选择题</button>
+                <button data-role="prompt-mode-code" type="button" class="al-mode-button">代码题</button>
+              </div>
             </div>
-            <textarea
-              data-role="extra-instructions"
-              class="al-prompt"
-              spellcheck="false"
-              placeholder="例如：保持 C 语言风格，不要改函数签名；优先修复我当前代码里的 bug；先给最稳的做法。"
-            ></textarea>
+            <div class="al-summary">提示词请在设置页中维护，这里只切换当前答题模式。</div>
           </section>
 
           <details class="al-section al-details" data-role="prompt-preview-wrap">
@@ -204,7 +197,7 @@
           <section class="al-section">
             <div class="al-code-head">
               <h3>截图辅助</h3>
-              <span data-role="shortcut-tip" class="al-mini-tip">框选 Alt+Shift+S / 整页 Alt+Shift+F</span>
+              <span data-role="shortcut-tip" class="al-mini-tip">框选 Alt+Shift+S / 固定区 Alt+Shift+F</span>
             </div>
             <div data-role="screenshot-status" class="al-summary">还没有附带题面截图。</div>
           </section>
@@ -248,12 +241,7 @@
             <div data-role="history-list" class="al-history-list">还没有搜题记录。</div>
           </section>
 
-          <section class="al-section">
-            <h3>解题思路</h3>
-            <div class="al-result" data-role="approach">还没有生成内容。</div>
-          </section>
-
-          <section class="al-section">
+          <section class="al-section" data-role="code-wrap">
             <div class="al-code-head">
               <h3>生成代码</h3>
               <button data-role="copy" type="button" class="al-link">复制</button>
@@ -262,7 +250,8 @@
               data-role="code"
               class="al-code"
               spellcheck="false"
-              placeholder="生成后的代码会显示在这里，你也可以手动修改后再填充。"
+              readonly
+              placeholder="生成后的代码会显示在这里，可直接复制或填回编辑器。"
             ></textarea>
           </section>
 
@@ -285,9 +274,14 @@
     elements.generatedTitle = host.querySelector('[data-role="generated-title"]');
     elements.problemType = host.querySelector('[data-role="problem-type"]');
     elements.problemDefinition = host.querySelector('[data-role="problem-definition"]');
+    elements.approachWrap = host.querySelector('[data-role="approach-wrap"]');
+    elements.codeWrap = host.querySelector('[data-role="code-wrap"]');
     elements.approach = host.querySelector('[data-role="approach"]');
     elements.code = host.querySelector('[data-role="code"]');
-    elements.extraInstructions = host.querySelector('[data-role="extra-instructions"]');
+    elements.choiceAnswerWrap = host.querySelector('[data-role="choice-answer-wrap"]');
+    elements.choiceAnswer = host.querySelector('[data-role="choice-answer"]');
+    elements.promptModeChoice = host.querySelector('[data-role="prompt-mode-choice"]');
+    elements.promptModeCode = host.querySelector('[data-role="prompt-mode-code"]');
     elements.details = host.querySelector('[data-role="details"]');
     elements.promptPreview = host.querySelector('[data-role="prompt-preview"]');
     elements.screenshotStatus = host.querySelector('[data-role="screenshot-status"]');
@@ -304,14 +298,20 @@
     host.querySelector('[data-role="capture"]').addEventListener("click", () => {
       void handleCaptureScreenshot();
     });
+    host.querySelector('[data-role="define-capture-region"]').addEventListener("click", () => {
+      void handleDefineFixedCaptureRegion();
+    });
     host.querySelector('[data-role="settings"]').addEventListener("click", () => {
       void handleOpenSettings();
     });
     host.querySelector('[data-role="paste-code"]').addEventListener("click", () => {
       void handlePasteCode();
     });
-    host.querySelector('[data-role="save-prompt"]').addEventListener("click", () => {
-      void handleSaveExtraInstructions();
+    elements.promptModeChoice?.addEventListener("click", () => {
+      void handlePromptModeSwitch("choice");
+    });
+    elements.promptModeCode?.addEventListener("click", () => {
+      void handlePromptModeSwitch("code");
     });
     host.querySelector('[data-role="refresh-preview"]').addEventListener("click", () => {
       void refreshPromptPreview();
@@ -321,6 +321,9 @@
     });
     host.querySelector('[data-role="copy"]').addEventListener("click", () => {
       void handleCopy();
+    });
+    host.querySelector('[data-role="copy-choice-answer"]').addEventListener("click", () => {
+      void handleCopyChoiceAnswer();
     });
     host.querySelector('[data-role="copy-problem"]').addEventListener("click", () => {
       void handleCopyProblem();
@@ -671,6 +674,57 @@
         outline: 1px solid rgba(255, 180, 107, 0.6);
       }
 
+      #${PANEL_ID} .al-choice-answer {
+        border-radius: 18px;
+        padding: 16px 18px;
+        font-size: 28px;
+        font-weight: 800;
+        line-height: 1.2;
+        letter-spacing: 0.04em;
+        color: #fff6e8;
+        text-align: center;
+        background:
+          radial-gradient(circle at top left, rgba(255, 208, 149, 0.2), transparent 42%),
+          linear-gradient(135deg, rgba(219, 122, 48, 0.26) 0%, rgba(191, 79, 41, 0.2) 100%);
+        border: 1px solid rgba(255, 180, 107, 0.18);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+      }
+
+      #${PANEL_ID} .al-mode-switch {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.06);
+      }
+
+      #${PANEL_ID} .al-mode-button {
+        border: 0;
+        border-radius: 999px;
+        padding: 6px 12px;
+        color: rgba(243, 242, 239, 0.76);
+        font-size: 12px;
+        font-weight: 700;
+        background: transparent;
+        cursor: pointer;
+        transition:
+          background 150ms ease,
+          color 150ms ease,
+          transform 150ms ease;
+      }
+
+      #${PANEL_ID} .al-mode-button:hover {
+        color: #fff3de;
+        transform: translateY(-1px);
+      }
+
+      #${PANEL_ID} .al-mode-button[data-active="true"] {
+        color: #20140e;
+        background: linear-gradient(135deg, #ffb56a 0%, #f08a3a 100%);
+        box-shadow: 0 10px 22px rgba(240, 138, 58, 0.2);
+      }
+
       #${PANEL_ID} .al-details summary {
         cursor: pointer;
         color: #ffcf9a;
@@ -817,6 +871,7 @@
     renderCurrentClassification(null);
     elements.approach.textContent = "还没有生成内容。";
     elements.code.value = "";
+    renderChoiceAnswer("");
     await refreshPromptPreview({ silent: true });
     setStatus("题面已提取，可以直接生成答案。");
   }
@@ -824,7 +879,7 @@
   async function handleSolve(options = {}) {
     const auto = Boolean(options.auto);
     const sourceCode = typeof options.sourceCode === "string" ? options.sourceCode : "";
-    const extraInstructions = getInlineExtraInstructions();
+    const extraInstructions = getStoredExtraInstructions();
 
     if (!auto) {
       openPanel();
@@ -858,11 +913,13 @@
       elements.approach.textContent =
         response.result.approach || response.result.summary || "模型已返回代码。";
       elements.code.value = response.result.code || "";
+      renderChoiceAnswer(response.result.answer || response.result.code || "");
       if (auto && sourceCode) {
         state.lastAutoSolveCode = sourceCode;
       }
       markResultReady(true);
       await refreshHistory({ silent: true });
+      blurAssistantEditable();
       const copied = await copyTextToClipboard(elements.code.value);
       setStatus(
         copied
@@ -911,6 +968,20 @@
     }
   }
 
+  async function handleCopyChoiceAnswer() {
+    const answer = String(elements.choiceAnswer?.textContent || "").trim();
+    if (!answer || answer === "还没有生成答案。") {
+      setStatus("还没有可复制的答案。");
+      return;
+    }
+
+    if (await copyTextToClipboard(answer)) {
+      setStatus("答案已复制到剪贴板。");
+    } else {
+      setStatus("复制答案失败，请手动选择。");
+    }
+  }
+
   async function handleOpenSettings() {
     try {
       const response = await sendMessage({ type: "autolearning:open-options" });
@@ -926,10 +997,6 @@
     try {
       const settings = await getCurrentSettings();
       applySettings(settings);
-
-      if (elements.extraInstructions instanceof HTMLTextAreaElement) {
-        elements.extraInstructions.value = settings.extraInstructions || "";
-      }
       await refreshPromptPreview({ silent: true });
       await refreshHistory({ silent: true });
     } catch (error) {
@@ -949,6 +1016,13 @@
     state.settings = {
       ...state.settings,
       ...settings,
+      promptMode: sanitizePromptMode(settings?.promptMode ?? state.settings.promptMode),
+      extraInstructionsChoice:
+        String(settings?.extraInstructionsChoice || state.settings.extraInstructionsChoice || DEFAULT_CHOICE_PROMPT).trim() ||
+        DEFAULT_CHOICE_PROMPT,
+      extraInstructionsCode:
+        String(settings?.extraInstructionsCode || state.settings.extraInstructionsCode || DEFAULT_CODE_PROMPT).trim() ||
+        DEFAULT_CODE_PROMPT,
       screenshotShortcut:
         normalizeShortcut(settings?.screenshotShortcut) || state.settings.screenshotShortcut,
       fullPageScreenshotShortcut:
@@ -959,6 +1033,7 @@
       ),
     };
     renderShortcutTip();
+    syncPromptModeUi();
   }
 
   function handleStorageChanged(changes, areaName) {
@@ -967,8 +1042,17 @@
     }
 
     const nextSettings = {};
-    if (changes.extraInstructions) {
-      nextSettings.extraInstructions = changes.extraInstructions.newValue || "";
+    if (changes.promptMode) {
+      nextSettings.promptMode = changes.promptMode.newValue;
+    }
+    if (changes.extraInstructionsChoice) {
+      nextSettings.extraInstructionsChoice = changes.extraInstructionsChoice.newValue || "";
+    }
+    if (changes.extraInstructionsCode) {
+      nextSettings.extraInstructionsCode = changes.extraInstructionsCode.newValue || "";
+    }
+    if (changes.extraInstructions && !changes.extraInstructionsCode && !changes.extraInstructionsChoice) {
+      nextSettings.extraInstructionsCode = changes.extraInstructions.newValue || "";
     }
     if (changes.includeScreenshotInSolver) {
       nextSettings.includeScreenshotInSolver = Boolean(changes.includeScreenshotInSolver.newValue);
@@ -994,25 +1078,8 @@
     }
 
     applySettings(nextSettings);
-    if (elements.extraInstructions instanceof HTMLTextAreaElement && "extraInstructions" in nextSettings) {
-      elements.extraInstructions.value = nextSettings.extraInstructions;
-    }
+    syncPromptModeUi();
     void refreshPromptPreview({ silent: true });
-  }
-
-  async function handleSaveExtraInstructions() {
-    const value =
-      elements.extraInstructions instanceof HTMLTextAreaElement
-        ? elements.extraInstructions.value.trim()
-        : "";
-
-    try {
-      await storageSet({ extraInstructions: value });
-      await refreshPromptPreview({ silent: true });
-      setStatus("额外提示词已保存。");
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error));
-    }
   }
 
   async function refreshHistory(options = {}) {
@@ -1091,7 +1158,7 @@
       const response = await sendMessage({
         type: "autolearning:preview-prompt",
         problem,
-        extraInstructions: getInlineExtraInstructions(),
+        extraInstructions: getStoredExtraInstructions(),
       });
 
       if (!response?.ok) {
@@ -1129,6 +1196,7 @@
   function formatPromptPreview(preview) {
     return [
       `模型：${preview?.model || "未知"}`,
+      `提示词模式：${preview?.promptMode === "choice" ? "选择题" : "代码题"}`,
       `温度：${preview?.temperature ?? "未知"}`,
       `额外提示词：${preview?.extraInstructions || "[空]"}`,
       `直接发图：${preview?.hasImage ? "是" : "否"}`,
@@ -1145,6 +1213,20 @@
   function renderPromptPreview(text) {
     if (elements.promptPreview) {
       elements.promptPreview.textContent = text;
+    }
+  }
+
+  function renderChoiceAnswer(text) {
+    const mode = getPromptMode();
+    const value = String(text || "").trim();
+    if (elements.choiceAnswerWrap) {
+      elements.choiceAnswerWrap.hidden = mode !== "choice";
+    }
+    if (elements.codeWrap) {
+      elements.codeWrap.hidden = mode === "choice";
+    }
+    if (elements.choiceAnswer) {
+      elements.choiceAnswer.textContent = value || "还没有生成答案。";
     }
   }
 
@@ -1271,7 +1353,9 @@
   function renderShortcutTip() {
     if (elements.shortcutTip) {
       elements.shortcutTip.textContent =
-        `框选 ${state.settings.screenshotShortcut} / 整页 ${state.settings.fullPageScreenshotShortcut}`;
+        `框选 ${state.settings.screenshotShortcut} / 固定区 ${state.settings.fullPageScreenshotShortcut}${
+          state.fixedCaptureRegion ? " 已设定" : " 未设定"
+        }`;
     }
   }
 
@@ -1282,13 +1366,20 @@
 
     if (problem?.screenshotDataUrl) {
       if (problem?.ocrSkipped) {
-        elements.screenshotStatus.textContent = "已截取题面截图，生成时将直接发送图片，不再调用 OCR。";
+        elements.screenshotStatus.textContent =
+          problem?.screenshotMode === "fixedRegion"
+            ? "已截取固定区域截图，生成时将直接发送图片，不再调用 OCR。"
+            : "已截取题面截图，生成时将直接发送图片，不再调用 OCR。";
         return;
       }
 
       elements.screenshotStatus.textContent = problem?.ocrText
-        ? "已截取题面截图，并已转写为 OCR 文本。"
-        : "已截取题面截图，等待 OCR 转写。";
+        ? problem?.screenshotMode === "fixedRegion"
+          ? "已截取固定区域截图，并已转写为 OCR 文本。"
+          : "已截取题面截图，并已转写为 OCR 文本。"
+        : problem?.screenshotMode === "fixedRegion"
+          ? "已截取固定区域截图，等待 OCR 转写。"
+          : "已截取题面截图，等待 OCR 转写。";
       return;
     }
 
@@ -1303,25 +1394,108 @@
     elements.ocrText.textContent = text || "还没有 OCR 结果。";
   }
 
-  function getInlineExtraInstructions() {
-    return elements.extraInstructions instanceof HTMLTextAreaElement
-      ? elements.extraInstructions.value.trim()
-      : "";
+  function sanitizePromptMode(value) {
+    return value === "choice" ? "choice" : "code";
+  }
+
+  function getPromptMode() {
+    return sanitizePromptMode(state.settings.promptMode);
+  }
+
+  function getPromptStorageKey(mode) {
+    return sanitizePromptMode(mode) === "choice"
+      ? "extraInstructionsChoice"
+      : "extraInstructionsCode";
+  }
+
+  function getPromptValueByMode(mode) {
+    return sanitizePromptMode(mode) === "choice"
+      ? String(state.settings.extraInstructionsChoice || DEFAULT_CHOICE_PROMPT).trim()
+      : String(state.settings.extraInstructionsCode || DEFAULT_CODE_PROMPT).trim();
+  }
+
+  function syncPromptModeUi() {
+    const mode = getPromptMode();
+    if (elements.promptModeChoice) {
+      elements.promptModeChoice.setAttribute("data-active", mode === "choice" ? "true" : "false");
+    }
+    if (elements.promptModeCode) {
+      elements.promptModeCode.setAttribute("data-active", mode === "code" ? "true" : "false");
+    }
+    renderChoiceAnswer(mode === "choice" ? state.result?.answer || state.result?.code || "" : "");
+  }
+
+  function getStoredExtraInstructions() {
+    return getPromptValueByMode(getPromptMode());
+  }
+
+  async function handlePromptModeSwitch(mode) {
+    const nextMode = sanitizePromptMode(mode);
+    const currentMode = getPromptMode();
+    if (nextMode === currentMode) {
+      return;
+    }
+
+    const currentValue = getPromptValueByMode(currentMode);
+    const currentStorageKey = getPromptStorageKey(currentMode);
+    const nextStorageKey = getPromptStorageKey(nextMode);
+
+    state.settings[currentStorageKey] = currentValue || getPromptValueByMode(currentMode);
+    state.settings.promptMode = nextMode;
+    syncPromptModeUi();
+
+    try {
+      await storageSet({
+        promptMode: nextMode,
+        [currentStorageKey]: state.settings[currentStorageKey],
+        [nextStorageKey]: getPromptValueByMode(nextMode),
+      });
+      await refreshPromptPreview({ silent: true });
+      setStatus(`已切换到${nextMode === "choice" ? "选择题" : "代码题"}提示词模式。`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    }
   }
 
   async function handleCaptureScreenshot() {
     return handleCaptureImageFlow({ mode: "selection" });
   }
 
+  async function handleDefineFixedCaptureRegion() {
+    openPanel();
+    setStatus("请框选一个固定截图区域，后续快捷键会直接使用它。");
+
+    try {
+      const rect = await selectScreenshotArea("拖拽设定固定截图区域，松开保存，Esc 取消");
+      if (!rect) {
+        setStatus("已取消固定区域设定。");
+        return;
+      }
+
+      await persistFixedCaptureRegion(rect);
+      state.fixedCaptureRegion = rectToStoredCaptureRegion(rect);
+      renderShortcutTip();
+      setStatus("固定截图区域已保存。之后按固定区快捷键会直接截这里。");
+      showToast("固定区域已经记住了，之后按快捷键就会直接截图并生成。");
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    }
+  }
+
   async function handleCaptureFullPageScreenshot() {
-    return handleCaptureImageFlow({ mode: "fullPage", autoSubmit: true });
+    return handleCaptureImageFlow({ mode: "fixedRegion", autoSolve: true, autoSubmit: true });
   }
 
   async function handleCaptureImageFlow(options = {}) {
     openPanel();
-    const mode = options.mode === "fullPage" ? "fullPage" : "selection";
+    const mode = options.mode === "fixedRegion" ? "fixedRegion" : "selection";
+    const autoSolveRequested = Boolean(options.autoSolve);
     const autoSubmitRequested = Boolean(options.autoSubmit);
-    setStatus(mode === "fullPage" ? "正在截取当前整页画面..." : "请框选题面区域，按 Esc 可以取消。");
+    setStatus(
+      mode === "fixedRegion"
+        ? "正在使用固定区域截图..."
+        : "请框选题面区域，按 Esc 可以取消。",
+    );
 
     try {
       let rect = null;
@@ -1331,21 +1505,26 @@
           setStatus("已取消截图。");
           return;
         }
+      } else {
+        rect = await getOrCreateFixedCaptureRect();
+        if (!rect) {
+          setStatus("还没有设定固定截图区域。");
+          return;
+        }
       }
 
-      setStatus(mode === "fullPage" ? "正在截取整页图片..." : "正在截取题面图片...");
+      setStatus(mode === "fixedRegion" ? "正在截取固定区域图片..." : "正在截取题面图片...");
       const response = await sendMessage({ type: "autolearning:capture-visible-tab" });
       if (!response?.ok || !response.dataUrl) {
         throw new Error(response?.error || "页面截图失败");
       }
 
-      const screenshotDataUrl =
-        mode === "fullPage" ? response.dataUrl : await cropImageDataUrl(response.dataUrl, rect);
+      const screenshotDataUrl = await cropImageDataUrl(response.dataUrl, rect);
       const settings = await getCurrentSettings();
       applySettings(settings);
       const useDirectImage = Boolean(state.settings.includeScreenshotInSolver);
       const autoSolveAfterCapture =
-        autoSubmitRequested || Boolean(state.settings.autoSolveAfterCapture);
+        autoSolveRequested || autoSubmitRequested || Boolean(state.settings.autoSolveAfterCapture);
       const problem = state.problem || (await extractProblem());
       problem.screenshotDataUrl = screenshotDataUrl;
       problem.screenshotRect = rect;
@@ -1361,13 +1540,13 @@
       if (useDirectImage) {
         await refreshPromptPreview({ silent: true });
         setStatus(
-          mode === "fullPage"
-            ? "整页截图完成。当前设置为直接发图，已跳过 OCR。"
+          mode === "fixedRegion"
+            ? "固定区域截图完成。当前设置为直接发图，已跳过 OCR。"
             : "截图完成。当前设置为直接发图，已跳过 OCR。",
         );
         showToast(
-          autoSubmitRequested && state.settings.autoSubmitAfterFullCapture
-            ? "整页截图已完成，准备自动生成并提交。"
+          autoSolveAfterCapture
+            ? "固定区域截图已完成，准备生成答案。"
             : "这次生成会直接附带截图，不再额外做 OCR。",
         );
         if (autoSolveAfterCapture) {
@@ -1379,7 +1558,9 @@
         return;
       }
 
-      setStatus(mode === "fullPage" ? "整页截图完成，正在调用 OCR..." : "截图完成，正在调用 OCR...");
+      setStatus(
+        mode === "fixedRegion" ? "固定区域截图完成，正在调用 OCR..." : "截图完成，正在调用 OCR...",
+      );
 
       const ocrResponse = await sendMessage({
         type: "autolearning:run-ocr",
@@ -1398,13 +1579,13 @@
       renderOcrText(problem.ocrText);
       await refreshPromptPreview({ silent: true });
       setStatus(
-        mode === "fullPage"
-          ? "整页截图已完成 OCR，接下来生成会把 OCR 文本发进提示词。"
+        mode === "fixedRegion"
+          ? "固定区域截图已完成 OCR，接下来生成会把 OCR 文本发进提示词。"
           : "题面截图已完成 OCR，接下来生成会把 OCR 文本发进提示词。",
       );
       showToast(
-        autoSubmitRequested && state.settings.autoSubmitAfterFullCapture
-          ? "OCR 已完成，准备自动生成并提交。"
+        autoSolveAfterCapture
+          ? "OCR 已完成，准备生成答案。"
           : "OCR 已完成，接下来生成会直接参考转写后的文本。",
       );
       if (autoSolveAfterCapture) {
@@ -1441,7 +1622,105 @@
     showToast("代码已自动填充，并已尝试提交。");
   }
 
-  async function selectScreenshotArea() {
+  async function getOrCreateFixedCaptureRect() {
+    const resolved = resolveStoredCaptureRegion(state.fixedCaptureRegion);
+    if (resolved) {
+      return resolved;
+    }
+
+    await handleDefineFixedCaptureRegion();
+    return resolveStoredCaptureRegion(state.fixedCaptureRegion);
+  }
+
+  async function hydrateFixedCaptureRegion() {
+    try {
+      const items = await storageGet({
+        [FIXED_CAPTURE_STORAGE_KEY]: {},
+      });
+      const regions = items?.[FIXED_CAPTURE_STORAGE_KEY];
+      state.fixedCaptureRegion = normalizeStoredCaptureRegion(
+        regions?.[getFixedCaptureScopeKey()] || null,
+      );
+      renderShortcutTip();
+    } catch {
+      state.fixedCaptureRegion = null;
+      renderShortcutTip();
+    }
+  }
+
+  async function persistFixedCaptureRegion(rect) {
+    const items = await storageGet({
+      [FIXED_CAPTURE_STORAGE_KEY]: {},
+    });
+    const regions =
+      items?.[FIXED_CAPTURE_STORAGE_KEY] && typeof items[FIXED_CAPTURE_STORAGE_KEY] === "object"
+        ? items[FIXED_CAPTURE_STORAGE_KEY]
+        : {};
+    const nextRegions = {
+      ...regions,
+      [getFixedCaptureScopeKey()]: rectToStoredCaptureRegion(rect),
+    };
+    await storageSet({
+      [FIXED_CAPTURE_STORAGE_KEY]: nextRegions,
+    });
+  }
+
+  function getFixedCaptureScopeKey() {
+    return `${location.origin}${location.pathname}`;
+  }
+
+  function rectToStoredCaptureRegion(rect) {
+    return normalizeStoredCaptureRegion({
+      leftRatio: rect.left / Math.max(window.innerWidth, 1),
+      topRatio: rect.top / Math.max(window.innerHeight, 1),
+      widthRatio: rect.width / Math.max(window.innerWidth, 1),
+      heightRatio: rect.height / Math.max(window.innerHeight, 1),
+    });
+  }
+
+  function normalizeStoredCaptureRegion(region) {
+    if (!region || typeof region !== "object") {
+      return null;
+    }
+
+    const leftRatio = Number(region.leftRatio);
+    const topRatio = Number(region.topRatio);
+    const widthRatio = Number(region.widthRatio);
+    const heightRatio = Number(region.heightRatio);
+    if (
+      !Number.isFinite(leftRatio) ||
+      !Number.isFinite(topRatio) ||
+      !Number.isFinite(widthRatio) ||
+      !Number.isFinite(heightRatio) ||
+      widthRatio <= 0 ||
+      heightRatio <= 0
+    ) {
+      return null;
+    }
+
+    return {
+      leftRatio: Math.min(Math.max(0, leftRatio), 1),
+      topRatio: Math.min(Math.max(0, topRatio), 1),
+      widthRatio: Math.min(Math.max(0.02, widthRatio), 1),
+      heightRatio: Math.min(Math.max(0.02, heightRatio), 1),
+    };
+  }
+
+  function resolveStoredCaptureRegion(region) {
+    const normalized = normalizeStoredCaptureRegion(region);
+    if (!normalized) {
+      return null;
+    }
+
+    return clampViewportRect({
+      left: Math.round(normalized.leftRatio * window.innerWidth),
+      top: Math.round(normalized.topRatio * window.innerHeight),
+      width: Math.round(normalized.widthRatio * window.innerWidth),
+      height: Math.round(normalized.heightRatio * window.innerHeight),
+    });
+  }
+
+  async function selectScreenshotArea(hintText = "拖拽框选题面区域，松开完成，Esc 取消") {
     return new Promise((resolve) => {
       const overlay = document.createElement("div");
       const shade = document.createElement("div");
@@ -1478,7 +1757,7 @@
         "background:rgba(15,20,24,0.88)",
         "box-shadow:0 12px 28px rgba(6,13,18,0.28)",
       ].join(";");
-      hint.textContent = "拖拽框选题面区域，松开完成，Esc 取消";
+      hint.textContent = hintText;
 
       overlay.appendChild(shade);
       overlay.appendChild(selection);
@@ -1593,11 +1872,25 @@
   }
 
   function normalizeViewportRect(x1, y1, x2, y2) {
-    return {
+    return clampViewportRect({
       left: Math.min(x1, x2),
       top: Math.min(y1, y2),
       width: Math.abs(x2 - x1),
       height: Math.abs(y2 - y1),
+    });
+  }
+
+  function clampViewportRect(rect) {
+    const left = Math.min(Math.max(0, Number(rect.left) || 0), Math.max(0, window.innerWidth - 1));
+    const top = Math.min(Math.max(0, Number(rect.top) || 0), Math.max(0, window.innerHeight - 1));
+    const maxWidth = Math.max(1, window.innerWidth - left);
+    const maxHeight = Math.max(1, window.innerHeight - top);
+
+    return {
+      left,
+      top,
+      width: Math.min(Math.max(1, Number(rect.width) || 1), maxWidth),
+      height: Math.min(Math.max(1, Number(rect.height) || 1), maxHeight),
     };
   }
 
@@ -1898,8 +2191,8 @@
         `语言：${problem.limits.language || "未知"}`,
         `截图：${
           problem.screenshotDataUrl
-            ? problem.screenshotMode === "fullPage"
-              ? "已附带整页截图"
+            ? problem.screenshotMode === "fixedRegion"
+              ? "已附带固定区域截图"
               : "已附带局部截图"
             : "未附带"
         }`,
@@ -2435,6 +2728,13 @@
     return Boolean(target.closest("input, textarea, [contenteditable='true'], [contenteditable='']"));
   }
 
+  function blurAssistantEditable() {
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && isInsideAssistant(active) && isEditableTarget(active)) {
+      active.blur();
+    }
+  }
+
   function hasMeaningfulCode(value) {
     return normalizeCode(value).trim().length > 0;
   }
@@ -2526,6 +2826,18 @@
           return;
         }
         resolve();
+      });
+    });
+  }
+
+  function storageGet(defaults) {
+    return new Promise((resolve, reject) => {
+      chrome.storage.local.get(defaults, (items) => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(normalizeRuntimeErrorMessage(chrome.runtime.lastError.message)));
+          return;
+        }
+        resolve(items);
       });
     });
   }

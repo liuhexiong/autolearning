@@ -53,16 +53,33 @@
             />
           </label>
 
-          <label class="field">
-            <span>额外提示词</span>
+          <div class="field">
+            <span>选择题提示词</span>
             <textarea
-              id="extraInstructions"
-              name="extraInstructions"
+              id="extraInstructionsChoice"
+              name="extraInstructionsChoice"
               rows="6"
-              placeholder="例如：优先用 C 语言，保留我已有的函数签名。"
+              placeholder="用于选择题、判断题、概念题。"
             ></textarea>
-            <small>这里适合放你的长期偏好，比如语言风格、输出习惯、注释要求。</small>
-          </label>
+            <small>选择题模式下会读取这里的提示词。</small>
+            <div class="actions">
+              <button type="button" id="restoreChoicePrompt" class="secondary">恢复选择题默认</button>
+            </div>
+          </div>
+
+          <div class="field">
+            <span>代码题提示词</span>
+            <textarea
+              id="extraInstructionsCode"
+              name="extraInstructionsCode"
+              rows="6"
+              placeholder="用于编程题、补全题、代码填空题。"
+            ></textarea>
+            <small>代码题模式下会读取这里的提示词。</small>
+            <div class="actions">
+              <button type="button" id="restoreCodePrompt" class="secondary">恢复代码题默认</button>
+            </div>
+          </div>
 
           <label class="toggle-field" for="includeScreenshotInSolver">
             <span class="toggle-copy">
@@ -100,20 +117,20 @@
           </label>
 
           <label class="field">
-            <span>整页截图快捷键</span>
+            <span>固定区域截图快捷键</span>
             <input
               id="fullPageScreenshotShortcut"
               name="fullPageScreenshotShortcut"
               type="text"
               placeholder="Alt+Shift+F"
             />
-            <small>按下后会直接截取当前标签页可见区域，不需要框选。</small>
+            <small>按下后会直接截取你预先设定好的固定区域，并开始生成答案。</small>
           </label>
 
           <label class="toggle-field" for="autoSubmitAfterFullCapture">
             <span class="toggle-copy">
-              <strong>整页截图后自动提交</strong>
-              <small>默认关闭。开启后，整页截图快捷键会自动截图、生成答案、填回编辑器并尝试点击页面上的“评测并提交”或“提交”按钮。</small>
+              <strong>固定区域截图后自动提交</strong>
+              <small>默认关闭。开启后，固定区域快捷截图会自动截图、生成答案、填回编辑器并尝试点击页面上的“评测并提交”或“提交”按钮。</small>
             </span>
             <input
               id="autoSubmitAfterFullCapture"

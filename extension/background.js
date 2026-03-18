@@ -1,8 +1,16 @@
+const DEFAULT_CHOICE_PROMPT =
+  "当前页面大概率是选择题、判断题、概念题或简答型理论题。请优先输出最终答案，而不是写完整程序。若题目是单选题，code 字段只放最终选项，例如 A、B、C、D；若是多选题，code 字段只放选项组合，例如 AC；若是判断题，code 字段只放“对”或“错”；若是简短填空或概念问答，code 字段只放最终可直接填写的简短答案。不要输出 main 函数，不要伪造代码。approach 用 3 到 5 句简洁说明你的判断依据，重点使用关键词匹配、概念定义和排除法。";
+const DEFAULT_CODE_PROMPT =
+  "当前页面大概率是编程题、代码填空题或需要补全模板的题。请优先保留题目指定语言、函数签名、输入输出格式和已有代码骨架，只补上真正缺失的部分。若页面自带代码与题面冲突，优先相信题面和样例。code 字段只放最终可提交或可复制的内容，不要在 code 里混入解释。尽量给出最稳妥、最容易通过样例和评测的做法。";
+
 const DEFAULT_SETTINGS = {
   baseUrl: "https://api.openai.com/v1",
   apiKey: "",
   model: "gpt-4.1-mini",
-  extraInstructions: "",
+  promptMode: "code",
+  extraInstructions: DEFAULT_CODE_PROMPT,
+  extraInstructionsChoice: DEFAULT_CHOICE_PROMPT,
+  extraInstructionsCode: DEFAULT_CODE_PROMPT,
   temperature: 0.2,
   includeScreenshotInSolver: false,
   autoSolveAfterCapture: false,
@@ -124,7 +132,7 @@ function normalizeBaseUrl(baseUrl) {
   return `${trimmed}/chat/completions`;
 }
 
-function buildSolverPrompt(problem, extraInstructions) {
+function buildSolverPrompt(problem, extraInstructions, promptMode = "code") {
   const sampleText =
     Array.isArray(problem?.samples) && problem.samples.length > 0
       ? problem.samples
@@ -142,6 +150,31 @@ function buildSolverPrompt(problem, extraInstructions) {
 
   const currentCode = String(problem?.currentCode || "").trim();
   const currentCodeBlock = currentCode ? currentCode : "[当前编辑器为空]";
+  const mode = getPromptMode({ promptMode });
+
+  if (mode === "choice") {
+    return [
+      "请根据题面直接判断最终答案，并返回 JSON。",
+      'JSON 格式：{"answer":"A/B/C/D/AC/对/错","summary":"一句话总结","approach":"简短依据"}',
+      "只返回合法 JSON，不要使用 markdown 代码块。",
+      "answer 必填，只放最终答案；summary 和 approach 尽量简短。",
+      extraInstructions ? `额外要求：${extraInstructions}` : "",
+      "",
+      `标题：${problem?.title || "未识别标题"}`,
+      "",
+      "题面：",
+      problem?.statementText || "[未提取到题面]",
+      "",
+      problem?.ocrText
+        ? ["题面 OCR：", problem.ocrText, ""].join("\n")
+        : "",
+      sampleText && sampleText !== "页面里没有明确提取到样例。"
+        ? ["样例：", sampleText, ""].join("\n")
+        : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
 
   return [
     "你是一个帮助学生学习算法题的编程助手。",
@@ -152,8 +185,8 @@ function buildSolverPrompt(problem, extraInstructions) {
     "如果页面中混入多关卡、多段教学说明或无关内容，只聚焦当前标题对应的这一关，不要把其他关卡要求混进答案。",
     "如果当前代码看起来是模板，请在保持函数签名、输入输出约定和已有骨架的前提下补全；如果当前代码明显与题目无关，可以忽略它。",
     "请严格返回 JSON，不要使用 markdown 代码块。",
-    'JSON 格式：{"generatedTitle":"AI 生成的题目标题","summary":"一句话总结","problemType":"题型分类","problemDefinition":"AI 对这道题的问题定义","approach":"分步思路","code":"最终代码"}',
-    "generatedTitle 请根据题面真实任务重新拟一个简洁明确的题目标题，不要照抄页面脏标题；summary 请简洁说明你最终依据了什么题意；problemType 请给出简洁题型分类；problemDefinition 请用 1 到 2 句话重新定义这道题到底在求什么；approach 请简洁说明关键思路；code 只放最终代码字符串。",
+    'JSON 格式：{"generatedTitle":"AI 生成的题目标题","summary":"一句话总结","problemType":"题型分类","problemDefinition":"AI 对这道题的问题定义","approach":"分步思路","answer":"选择题最终答案","code":"代码题最终可复制内容"}',
+    "generatedTitle 请根据题面真实任务重新拟一个简洁明确的题目标题，不要照抄页面脏标题；summary 请简洁说明你最终依据了什么题意；problemType 请给出简洁题型分类；problemDefinition 请用 1 到 2 句话重新定义这道题到底在求什么；approach 请简洁说明关键思路；answer 只在选择题、判断题、填空题这类非代码题里填写最终答案，例如 A、B、C、D、AC、对、错；code 只在代码题里放最终可复制代码，非代码题时留空字符串。",
     extraInstructions ? `额外要求：${extraInstructions}` : "",
     "",
     `标题：${problem?.title || "未识别标题"}`,
@@ -192,10 +225,8 @@ async function solveProblem(problem, extraInstructionsOverride) {
   }
 
   const settings = await storageGet(DEFAULT_SETTINGS);
-  const extraInstructions = normalizeExtraInstructions(
-    extraInstructionsOverride,
-    settings.extraInstructions,
-  );
+  const extraInstructions = normalizeExtraInstructions(extraInstructionsOverride, settings);
+  const promptMode = getPromptMode(settings);
   if (!settings.apiKey || !String(settings.apiKey).trim()) {
     throw new Error("请先在插件设置页填写 API Key。");
   }
@@ -204,6 +235,7 @@ async function solveProblem(problem, extraInstructionsOverride) {
     problem,
     extraInstructions,
     Boolean(settings.includeScreenshotInSolver),
+    promptMode,
   );
 
   const url = normalizeBaseUrl(settings.baseUrl);
@@ -245,8 +277,16 @@ async function solveProblem(problem, extraInstructionsOverride) {
 
     const assistantText = readAssistantText(payload);
     const parsed = parseSolverResponse(assistantText);
+    const fallbackAnswer = extractChoiceAnswer(parsed.answer || parsed.code || assistantText);
+    const finalAnswer = parsed.answer || fallbackAnswer;
+    const finalCode =
+      promptMode === "choice" && finalAnswer ? parsed.code || finalAnswer : parsed.code;
 
-    if (!parsed.code) {
+    if (promptMode === "choice" && !finalAnswer) {
+      throw new Error("模型返回里没有识别到最终答案。");
+    }
+
+    if (promptMode !== "choice" && !finalCode) {
       throw new Error("模型返回里没有可填充的代码。");
     }
 
@@ -258,7 +298,8 @@ async function solveProblem(problem, extraInstructionsOverride) {
       problemType: parsed.problemType,
       problemDefinition: parsed.problemDefinition,
       approach: parsed.approach,
-      code: parsed.code,
+      answer: finalAnswer,
+      code: finalCode,
       raw: assistantText,
     };
 
@@ -275,18 +316,18 @@ async function buildPromptPreview(problem, extraInstructionsOverride) {
   }
 
   const settings = await storageGet(DEFAULT_SETTINGS);
-  const extraInstructions = normalizeExtraInstructions(
-    extraInstructionsOverride,
-    settings.extraInstructions,
-  );
+  const extraInstructions = normalizeExtraInstructions(extraInstructionsOverride, settings);
+  const promptMode = getPromptMode(settings);
   const messages = buildSolverMessages(
     problem,
     extraInstructions,
     Boolean(settings.includeScreenshotInSolver),
+    promptMode,
   );
 
   return {
     model: settings.model,
+    promptMode,
     temperature: Number(settings.temperature ?? 0.2),
     extraInstructions,
     system: messages[0].content,
@@ -296,18 +337,21 @@ async function buildPromptPreview(problem, extraInstructionsOverride) {
   };
 }
 
-function buildSolverMessages(problem, extraInstructions, includeScreenshotInSolver) {
-  const userPrompt = buildSolverPrompt(problem, extraInstructions);
+function buildSolverMessages(problem, extraInstructions, includeScreenshotInSolver, promptMode = "code") {
+  const userPrompt = buildSolverPrompt(problem, extraInstructions, promptMode);
   const shouldAttachScreenshot =
     Boolean(includeScreenshotInSolver) &&
     typeof problem?.screenshotDataUrl === "string" &&
     problem.screenshotDataUrl.startsWith("data:image/");
+  const mode = getPromptMode({ promptMode });
 
   return [
     {
       role: "system",
       content:
-        "你是耐心、严谨的算法学习助手。你要优先依据题面与样例理解任务，谨慎处理可能串题的标题、代码模板和页面杂质。输出必须是 JSON，并且 code 字段里只放最终代码字符串。",
+        mode === "choice"
+          ? "你是一个只做题目判定的助手。输出必须是 JSON。"
+          : "你是耐心、严谨的算法学习助手。你要优先依据题面与样例理解任务，谨慎处理可能串题的标题、代码模板和页面杂质。输出必须是 JSON，并且 code 字段里只放最终可复制内容。",
     },
     {
       role: "user",
@@ -329,11 +373,20 @@ function buildSolverMessages(problem, extraInstructions, includeScreenshotInSolv
   ];
 }
 
-function normalizeExtraInstructions(overrideValue, storedValue) {
-  if (typeof overrideValue === "string") {
+function normalizeExtraInstructions(overrideValue, settings) {
+  if (typeof overrideValue === "string" && overrideValue.trim()) {
     return overrideValue.trim();
   }
-  return String(storedValue || "").trim();
+  const promptMode = getPromptMode(settings);
+  const modeValue =
+    promptMode === "choice"
+      ? settings?.extraInstructionsChoice
+      : settings?.extraInstructionsCode;
+  return String(modeValue || settings?.extraInstructions || "").trim();
+}
+
+function getPromptMode(settings) {
+  return settings?.promptMode === "choice" ? "choice" : "code";
 }
 
 async function captureVisibleTab(sender) {
@@ -557,6 +610,7 @@ function parseSolverResponse(text) {
         parsed.problemDefinition || parsed.problem || parsed.taskDefinition || "",
       ).trim(),
       approach: String(parsed.approach || parsed.analysis || "").trim(),
+      answer: String(parsed.answer || parsed.finalAnswer || "").trim(),
       code: stripCodeFence(String(parsed.code || "").trim()),
     };
   } catch {
@@ -566,9 +620,29 @@ function parseSolverResponse(text) {
       problemType: "",
       problemDefinition: "",
       approach: "",
+      answer: "",
       code: stripCodeFence(cleaned),
     };
   }
+}
+
+function extractChoiceAnswer(text) {
+  const value = String(text || "").trim();
+  if (!value) {
+    return "";
+  }
+
+  const normalized = value
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const answerMatch =
+    normalized.match(/(?:答案|answer|final answer)\s*[:：]?\s*([A-D]{1,4}|对|错)/i) ||
+    normalized.match(/\b([A-D]{1,4})\b/) ||
+    normalized.match(/^(对|错)$/);
+
+  return answerMatch?.[1] ? String(answerMatch[1]).toUpperCase() : "";
 }
 
 async function getSolveHistory() {
@@ -595,6 +669,7 @@ async function appendSolveHistory(problem, result) {
     problemDefinition: String(result?.problemDefinition || "").trim(),
     summary: String(result?.summary || "").trim(),
     approach: String(result?.approach || "").trim(),
+    answer: String(result?.answer || "").trim(),
     code: String(result?.code || ""),
   };
 
