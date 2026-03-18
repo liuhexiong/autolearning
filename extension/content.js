@@ -27,6 +27,10 @@
   const state = {
     mounted: false,
     solving: false,
+    fullAutoRunning: false,
+    fullAutoStopRequested: false,
+    fullAutoRunToken: 0,
+    fullAutoRound: 0,
     problem: null,
     result: null,
     history: [],
@@ -55,6 +59,8 @@
       screenshotShortcut: "Alt+Shift+S",
       fullPageScreenshotShortcut: "Alt+Shift+F",
       autoSubmitAfterFullCapture: false,
+      fullAutoNextDelayMs: 3000,
+      fullAutoMode: "extract",
     },
   };
 
@@ -152,9 +158,11 @@
           <p class="al-status" data-role="status">初始化中...</p>
 
           <div class="al-actions">
+            <button data-role="extract" type="button">提取题面</button>
             <button data-role="solve" type="button" class="al-primary">生成答案</button>
             <button data-role="capture" type="button">框选截图</button>
             <button data-role="define-capture-region" type="button">设定区域</button>
+            <button data-role="full-auto" type="button">开启全自动</button>
             <button data-role="settings" type="button">设置</button>
             <button data-role="paste-code" type="button">读取剪贴板代码</button>
           </div>
@@ -181,6 +189,17 @@
               </div>
             </div>
             <div class="al-summary">提示词请在设置页中维护，这里只切换当前答题模式。</div>
+          </section>
+
+          <section class="al-section">
+            <div class="al-code-head">
+              <h3>全自动模式</h3>
+              <div class="al-mode-switch" data-role="full-auto-mode-switch">
+                <button data-role="full-auto-mode-capture" type="button" class="al-mode-button">截图全自动</button>
+                <button data-role="full-auto-mode-extract" type="button" class="al-mode-button">提取题面全自动</button>
+              </div>
+            </div>
+            <div class="al-summary" data-role="full-auto-mode-summary">先选择全自动模式，再点击“开启全自动”。</div>
           </section>
 
           <details class="al-section al-details" data-role="prompt-preview-wrap">
@@ -213,6 +232,7 @@
               <div class="al-inline-actions">
                 <button data-role="copy-problem" type="button" class="al-link-button">复制 JSON</button>
                 <button data-role="export-problem" type="button" class="al-link-button">导出 JSON</button>
+                <button data-role="clear-problem" type="button" class="al-link-button">清空提取</button>
               </div>
             </div>
             <div class="al-summary" data-role="summary"></div>
@@ -282,16 +302,23 @@
     elements.choiceAnswer = host.querySelector('[data-role="choice-answer"]');
     elements.promptModeChoice = host.querySelector('[data-role="prompt-mode-choice"]');
     elements.promptModeCode = host.querySelector('[data-role="prompt-mode-code"]');
+    elements.fullAutoModeCapture = host.querySelector('[data-role="full-auto-mode-capture"]');
+    elements.fullAutoModeExtract = host.querySelector('[data-role="full-auto-mode-extract"]');
+    elements.fullAutoModeSummary = host.querySelector('[data-role="full-auto-mode-summary"]');
     elements.details = host.querySelector('[data-role="details"]');
     elements.promptPreview = host.querySelector('[data-role="prompt-preview"]');
     elements.screenshotStatus = host.querySelector('[data-role="screenshot-status"]');
     elements.shortcutTip = host.querySelector('[data-role="shortcut-tip"]');
+    elements.fullAutoButton = host.querySelector('[data-role="full-auto"]');
     elements.header = host.querySelector(".al-header");
     elements.ocrText = host.querySelector('[data-role="ocr-text"]');
     elements.historyList = host.querySelector('[data-role="history-list"]');
 
     host.querySelector(".al-close").addEventListener("click", closePanel);
     elements.launcher.addEventListener("click", togglePanel);
+    host.querySelector('[data-role="extract"]').addEventListener("click", () => {
+      void handleExtract();
+    });
     host.querySelector('[data-role="solve"]').addEventListener("click", () => {
       void handleSolve();
     });
@@ -300,6 +327,9 @@
     });
     host.querySelector('[data-role="define-capture-region"]').addEventListener("click", () => {
       void handleDefineFixedCaptureRegion();
+    });
+    host.querySelector('[data-role="full-auto"]').addEventListener("click", () => {
+      void handleToggleFullAuto();
     });
     host.querySelector('[data-role="settings"]').addEventListener("click", () => {
       void handleOpenSettings();
@@ -312,6 +342,12 @@
     });
     elements.promptModeCode?.addEventListener("click", () => {
       void handlePromptModeSwitch("code");
+    });
+    elements.fullAutoModeCapture?.addEventListener("click", () => {
+      void handleFullAutoModeSwitch("capture");
+    });
+    elements.fullAutoModeExtract?.addEventListener("click", () => {
+      void handleFullAutoModeSwitch("extract");
     });
     host.querySelector('[data-role="refresh-preview"]').addEventListener("click", () => {
       void refreshPromptPreview();
@@ -331,6 +367,9 @@
     host.querySelector('[data-role="export-problem"]').addEventListener("click", () => {
       void handleExportProblem();
     });
+    host.querySelector('[data-role="clear-problem"]').addEventListener("click", () => {
+      handleClearProblemState();
+    });
     host.querySelector('[data-role="export-history"]').addEventListener("click", () => {
       void handleExportHistoryMarkdown();
     });
@@ -345,6 +384,7 @@
     setupLauncherDrag();
     window.addEventListener("resize", handleViewportResize);
     chrome.storage?.onChanged?.addListener(handleStorageChanged);
+    renderFullAutoButton();
     void hydrateInlineSettings();
   }
 
@@ -585,6 +625,11 @@
       #${PANEL_ID} .al-primary {
         color: #fff6eb;
         background: linear-gradient(135deg, #db7a30 0%, #bf4f29 100%);
+      }
+
+      #${PANEL_ID} .al-actions button[data-running="true"] {
+        color: #fff6eb;
+        background: linear-gradient(135deg, #d04b35 0%, #9d2e28 100%);
       }
 
       #${PANEL_ID} .al-section {
@@ -876,20 +921,50 @@
     setStatus("题面已提取，可以直接生成答案。");
   }
 
+  function handleClearProblemState() {
+    state.problem = null;
+    state.result = null;
+    state.lastAutoSolveCode = "";
+    state.promptPreview = null;
+    markResultReady(false);
+    renderSummary("还没有提取内容。");
+    renderGeneratedTitle("");
+    renderCurrentClassification(null);
+    renderPromptPreview("还没有可预览的内容。");
+    renderScreenshotStatus(null);
+    renderOcrText("");
+    renderChoiceAnswer("");
+    if (elements.approach) {
+      elements.approach.textContent = "还没有生成内容。";
+    }
+    if (elements.code) {
+      elements.code.value = "";
+    }
+    if (elements.details) {
+      elements.details.textContent = "还没有提取内容。";
+    }
+    setStatus("已清空当前提取结果。");
+  }
+
   async function handleSolve(options = {}) {
     const auto = Boolean(options.auto);
     const sourceCode = typeof options.sourceCode === "string" ? options.sourceCode : "";
     const extraInstructions = getStoredExtraInstructions();
+    const mode = getPromptMode();
 
     if (!auto) {
       openPanel();
     }
 
     if (state.solving) {
-      return;
+      return { ok: false, error: "当前正在生成答案，请稍后再试。" };
     }
 
     if (!state.problem) {
+      if (mode === "choice") {
+        setStatus("选择题模式不会自动提取题面，请先点“提取题面”。");
+        return { ok: false, error: "选择题模式缺少题面上下文。" };
+      }
       await handleExtract();
     }
 
@@ -908,30 +983,207 @@
       }
 
       state.result = response.result;
+      const choiceAnswerText = String(response.result.answer || response.result.code || "").trim();
       renderGeneratedTitle(response.result.generatedTitle || response.result.summary || "");
       renderCurrentClassification(response.result);
       elements.approach.textContent =
         response.result.approach || response.result.summary || "模型已返回代码。";
       elements.code.value = response.result.code || "";
-      renderChoiceAnswer(response.result.answer || response.result.code || "");
+      renderChoiceAnswer(choiceAnswerText);
+      let autoPickResult = null;
+      if (mode === "choice" && choiceAnswerText) {
+        autoPickResult = pickChoiceOptions(choiceAnswerText);
+      }
       if (auto && sourceCode) {
         state.lastAutoSolveCode = sourceCode;
       }
       markResultReady(true);
       await refreshHistory({ silent: true });
       blurAssistantEditable();
-      const copied = await copyTextToClipboard(elements.code.value);
+      const copySource = mode === "choice" ? choiceAnswerText : elements.code.value;
+      const copied = await copyTextToClipboard(copySource);
+      const autoPickSuffix =
+        autoPickResult?.ok && autoPickResult.labels.length > 0
+          ? `，并自动选择 ${autoPickResult.labels.join("/")}`
+          : "";
+      let nextQuestionSuffix = "";
+      let nextClicked = false;
+      if (auto && mode === "choice" && autoPickResult?.ok) {
+        await delay(120);
+        nextClicked = clickNextQuestionButton();
+        if (nextClicked) {
+          nextQuestionSuffix = "，已自动进入下一题";
+        }
+      }
       setStatus(
         copied
-          ? `已生成答案并自动复制代码，模型：${response.result.model}`
-          : `已生成答案，模型：${response.result.model}`,
+          ? `已生成答案${autoPickSuffix}${nextQuestionSuffix}并自动复制，模型：${response.result.model}`
+          : `已生成答案${autoPickSuffix}${nextQuestionSuffix}，模型：${response.result.model}`,
       );
       showToast("答案已经生成好了，点 AL 就能查看。");
+      return {
+        ok: true,
+        result: response.result,
+        choiceAnswerText,
+        autoPickResult,
+        nextClicked,
+      };
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error));
+      const message = error instanceof Error ? error.message : String(error);
+      setStatus(message);
+      return {
+        ok: false,
+        error: message,
+      };
     } finally {
       state.solving = false;
     }
+  }
+
+  async function handleToggleFullAuto() {
+    openPanel();
+
+    if (state.fullAutoRunning) {
+      state.fullAutoStopRequested = true;
+      renderFullAutoButton();
+      setStatus("已请求停止全自动模式，会在当前这一题结束后停下。");
+      return;
+    }
+
+    if (getPromptMode() !== "choice") {
+      setStatus("全自动模式当前只支持选择题模式，请先切换到“选择题”。");
+      return;
+    }
+
+    const fullAutoMode = getFullAutoMode();
+    if (fullAutoMode === "capture") {
+      const rect = await getOrCreateFixedCaptureRect();
+      if (!rect) {
+        setStatus("截图全自动启动前需要先设定固定截图区域。");
+        return;
+      }
+      state.fixedCaptureRegion = rectToStoredCaptureRegion(rect);
+    }
+
+    state.fullAutoRunning = true;
+    state.fullAutoStopRequested = false;
+    state.fullAutoRound = 0;
+    state.fullAutoRunToken += 1;
+    const runToken = state.fullAutoRunToken;
+    renderFullAutoButton();
+    setStatus(
+      fullAutoMode === "capture"
+        ? "全自动模式已启动，将按截图链路连续答题并跳到下一题。"
+        : "全自动模式已启动，将直接提取题面文本、答题并跳到下一题。",
+    );
+    showToast(
+      fullAutoMode === "capture"
+        ? "截图全自动已启动。再次点击按钮可停止。"
+        : "提取题面全自动已启动，当前不会使用 OCR。再次点击按钮可停止。",
+    );
+
+    void runFullAutoLoop(runToken);
+  }
+
+  async function runFullAutoLoop(runToken) {
+    try {
+      while (
+        state.fullAutoRunning &&
+        !state.fullAutoStopRequested &&
+        runToken === state.fullAutoRunToken
+      ) {
+        const beforeFingerprint = getPageFingerprint();
+        state.fullAutoRound += 1;
+        setStatus(`全自动模式运行中，正在处理第 ${state.fullAutoRound} 题...`);
+
+        const fullAutoMode = getFullAutoMode();
+        const flowResult =
+          fullAutoMode === "capture"
+            ? await handleCaptureImageFlow({
+                mode: "fixedRegion",
+                autoSolve: true,
+                autoSubmit: false,
+              })
+            : await runTextOnlyFullAutoRound();
+
+        if (runToken !== state.fullAutoRunToken || state.fullAutoStopRequested) {
+          break;
+        }
+
+        if (!flowResult?.ok) {
+          throw new Error(flowResult?.error || "全自动模式执行失败。");
+        }
+
+        const solveResult = flowResult.solveResult;
+        if (!solveResult?.ok) {
+          throw new Error(solveResult?.error || "全自动模式没有拿到有效答案。");
+        }
+
+        if (!solveResult.autoPickResult?.ok) {
+          throw new Error(
+            fullAutoMode === "capture"
+              ? "这一题没有成功自动选择选项，请检查截图区域、OCR 结果或答案格式。"
+              : "这一题没有成功自动选择选项，请检查题面提取结果或答案格式。",
+          );
+        }
+
+        if (!solveResult.nextClicked) {
+          setStatus(`第 ${state.fullAutoRound} 题已完成，但没有找到“下一题”按钮，全自动模式已停止。`);
+          showToast("没有找到下一题按钮，全自动模式已停止。");
+          break;
+        }
+
+        const pageChanged = await waitForNextQuestion(beforeFingerprint, runToken);
+        if (!pageChanged && !state.fullAutoStopRequested && runToken === state.fullAutoRunToken) {
+          setStatus(
+            `第 ${state.fullAutoRound} 题已提交到下一题流程，但页面长时间没有明显变化，全自动模式已停止。`,
+          );
+          showToast("下一题页面没有及时更新，全自动模式已停止。");
+          break;
+        }
+
+        resetProblemForNextAutoRound();
+        await delay(320);
+      }
+    } catch (error) {
+      if (runToken === state.fullAutoRunToken) {
+        const message = error instanceof Error ? error.message : String(error);
+        setStatus(`全自动模式已停止：${message}`);
+        showToast("全自动模式已停止，请检查当前页面后再继续。");
+      }
+    } finally {
+      if (runToken === state.fullAutoRunToken) {
+        const stoppedByUser = state.fullAutoStopRequested;
+        state.fullAutoRunning = false;
+        state.fullAutoStopRequested = false;
+        renderFullAutoButton();
+        if (stoppedByUser) {
+          setStatus(`全自动模式已停止，共处理 ${state.fullAutoRound} 题。`);
+          showToast("全自动模式已停止。");
+        }
+      }
+    }
+  }
+
+  async function runTextOnlyFullAutoRound() {
+    const problem = await extractProblem();
+    problem.screenshotDataUrl = "";
+    problem.screenshotRect = null;
+    problem.screenshotMode = "";
+    problem.ocrText = "";
+    problem.ocrModel = "";
+    problem.ocrSkipped = true;
+    state.problem = problem;
+    renderProblem(problem);
+    renderScreenshotStatus(problem);
+    renderOcrText("");
+    await refreshPromptPreview({ silent: true });
+    const solveResult = await handleSolve({ auto: true });
+    return {
+      ok: true,
+      problem,
+      solveResult,
+    };
   }
 
   async function handleFill() {
@@ -982,6 +1234,128 @@
     }
   }
 
+  function pickChoiceOptions(answerText) {
+    const labels = extractChoiceLabels(answerText);
+    if (labels.length === 0) {
+      return { ok: false, labels: [], error: "答案不是 A/B/C/D 或 对/错 格式。" };
+    }
+
+    const items = Array.from(
+      document.querySelectorAll("ul.radio-view li, ul.checkbox-view li, .radio-view li, .checkbox-view li"),
+    );
+    if (items.length === 0) {
+      return { ok: false, labels: [], error: "页面没有找到可点击的选项列表。" };
+    }
+
+    const picked = [];
+    for (const label of labels) {
+      const item = items.find((candidate) => matchesChoiceItemByLabel(candidate, label));
+      if (!item) {
+        continue;
+      }
+      const target =
+        item.querySelector("input[type='radio'], input[type='checkbox']") ||
+        item.querySelector("label, .checkIcon, i, .item-content, .stem, span, div") ||
+        item;
+      if (simulateUserClick(target)) {
+        picked.push(label);
+      }
+    }
+
+    return {
+      ok: picked.length > 0,
+      labels: picked,
+      error: picked.length > 0 ? "" : "没有匹配到可点击的选项。",
+    };
+  }
+
+  function extractChoiceLabels(answerText) {
+    const raw = String(answerText || "").trim();
+    const normalizedRaw = raw.toLowerCase();
+    if (/(^|[^a-z])(true|正确|对)([^a-z]|$)/i.test(raw)) {
+      return ["对"];
+    }
+    if (/(^|[^a-z])(false|错误|错)([^a-z]|$)/i.test(raw)) {
+      return ["错"];
+    }
+
+    const cleaned = String(raw)
+      .replace(/答案\s*[:：]?\s*/gi, " ")
+      .replace(/[^A-Da-d]/g, "")
+      .toUpperCase();
+    const unique = [];
+    for (const char of cleaned) {
+      if (/^[A-D]$/.test(char) && !unique.includes(char)) {
+        unique.push(char);
+      }
+    }
+    return unique;
+  }
+
+  function matchesChoiceItemByLabel(item, label) {
+    if (!(item instanceof Element)) {
+      return false;
+    }
+    const letterEl = item.querySelector(".letterSort, .option-letter, label, span");
+    const text = normalizeText((letterEl ? letterEl.textContent : item.textContent) || "")
+      .replace(/\s+/g, "")
+      .toUpperCase();
+    if (label === "对") {
+      return text.includes("对") || text.includes("正确") || text.includes("TRUE");
+    }
+    if (label === "错") {
+      return text.includes("错") || text.includes("错误") || text.includes("FALSE");
+    }
+
+    return text.startsWith(`${label}.`) || text.startsWith(label) || text.includes(`${label}.`);
+  }
+
+  function simulateUserClick(element) {
+    if (!(element instanceof Element)) {
+      return false;
+    }
+    for (const type of ["mouseover", "mousedown", "mouseup", "click"]) {
+      element.dispatchEvent(
+        new MouseEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          view: window,
+        }),
+      );
+    }
+    return true;
+  }
+
+  function clickNextQuestionButton() {
+    const candidates = [
+      ".next-topic.next-t",
+      "span.next-topic.next-t",
+      ".next-topic",
+      "button.next-topic",
+      ".pre-next .next-t",
+    ];
+
+    for (const selector of candidates) {
+      const target = firstVisible([selector]);
+      if (!(target instanceof Element)) {
+        continue;
+      }
+      const text = normalizeText(target.textContent || "");
+      if (!text || /下一题|下一个|next/i.test(text)) {
+        return simulateUserClick(target);
+      }
+    }
+
+    const textFallback = Array.from(document.querySelectorAll("span,button,a,div")).find((node) => {
+      const text = normalizeText(node.textContent || "");
+      return /^(下一题|下一个|Next)$/i.test(text);
+    });
+    if (textFallback instanceof Element) {
+      return simulateUserClick(textFallback);
+    }
+    return false;
+  }
+
   async function handleOpenSettings() {
     try {
       const response = await sendMessage({ type: "autolearning:open-options" });
@@ -1017,6 +1391,7 @@
       ...state.settings,
       ...settings,
       promptMode: sanitizePromptMode(settings?.promptMode ?? state.settings.promptMode),
+      fullAutoMode: sanitizeFullAutoMode(settings?.fullAutoMode ?? state.settings.fullAutoMode),
       extraInstructionsChoice:
         String(settings?.extraInstructionsChoice || state.settings.extraInstructionsChoice || DEFAULT_CHOICE_PROMPT).trim() ||
         DEFAULT_CHOICE_PROMPT,
@@ -1031,9 +1406,13 @@
       autoSubmitAfterFullCapture: Boolean(
         settings?.autoSubmitAfterFullCapture ?? state.settings.autoSubmitAfterFullCapture,
       ),
+      fullAutoNextDelayMs: normalizeFullAutoDelay(
+        settings?.fullAutoNextDelayMs ?? state.settings.fullAutoNextDelayMs,
+      ),
     };
     renderShortcutTip();
     syncPromptModeUi();
+    syncFullAutoModeUi();
   }
 
   function handleStorageChanged(changes, areaName) {
@@ -1044,6 +1423,9 @@
     const nextSettings = {};
     if (changes.promptMode) {
       nextSettings.promptMode = changes.promptMode.newValue;
+    }
+    if (changes.fullAutoMode) {
+      nextSettings.fullAutoMode = changes.fullAutoMode.newValue;
     }
     if (changes.extraInstructionsChoice) {
       nextSettings.extraInstructionsChoice = changes.extraInstructionsChoice.newValue || "";
@@ -1072,6 +1454,9 @@
     if (changes.autoSubmitAfterFullCapture) {
       nextSettings.autoSubmitAfterFullCapture = Boolean(changes.autoSubmitAfterFullCapture.newValue);
     }
+    if (changes.fullAutoNextDelayMs) {
+      nextSettings.fullAutoNextDelayMs = normalizeFullAutoDelay(changes.fullAutoNextDelayMs.newValue);
+    }
 
     if (Object.keys(nextSettings).length === 0) {
       return;
@@ -1079,6 +1464,7 @@
 
     applySettings(nextSettings);
     syncPromptModeUi();
+    syncFullAutoModeUi();
     void refreshPromptPreview({ silent: true });
   }
 
@@ -1149,8 +1535,17 @@
 
   async function refreshPromptPreview(options = {}) {
     const silent = Boolean(options.silent);
+    const mode = getPromptMode();
 
     try {
+      if (!state.problem && mode === "choice") {
+        renderPromptPreview("选择题模式不会自动提取题面，请先点击“提取题面”。");
+        if (!silent) {
+          setStatus("选择题模式不会自动提取题面。");
+        }
+        return;
+      }
+
       const problem = state.problem || (await extractProblem());
       state.problem = problem;
       renderProblem(problem);
@@ -1359,6 +1754,16 @@
     }
   }
 
+  function renderFullAutoButton() {
+    if (!(elements.fullAutoButton instanceof HTMLButtonElement)) {
+      return;
+    }
+
+    elements.fullAutoButton.textContent = state.fullAutoRunning ? "停止全自动" : "开启全自动";
+    elements.fullAutoButton.setAttribute("data-running", state.fullAutoRunning ? "true" : "false");
+    elements.fullAutoButton.classList.toggle("al-primary", !state.fullAutoRunning);
+  }
+
   function renderScreenshotStatus(problem) {
     if (!elements.screenshotStatus) {
       return;
@@ -1398,8 +1803,16 @@
     return value === "choice" ? "choice" : "code";
   }
 
+  function sanitizeFullAutoMode(value) {
+    return value === "capture" ? "capture" : "extract";
+  }
+
   function getPromptMode() {
     return sanitizePromptMode(state.settings.promptMode);
+  }
+
+  function getFullAutoMode() {
+    return sanitizeFullAutoMode(state.settings.fullAutoMode);
   }
 
   function getPromptStorageKey(mode) {
@@ -1423,6 +1836,24 @@
       elements.promptModeCode.setAttribute("data-active", mode === "code" ? "true" : "false");
     }
     renderChoiceAnswer(mode === "choice" ? state.result?.answer || state.result?.code || "" : "");
+    renderFullAutoButton();
+  }
+
+  function syncFullAutoModeUi() {
+    const mode = getFullAutoMode();
+    if (elements.fullAutoModeCapture) {
+      elements.fullAutoModeCapture.setAttribute("data-active", mode === "capture" ? "true" : "false");
+    }
+    if (elements.fullAutoModeExtract) {
+      elements.fullAutoModeExtract.setAttribute("data-active", mode === "extract" ? "true" : "false");
+    }
+    if (elements.fullAutoModeSummary) {
+      elements.fullAutoModeSummary.textContent =
+        mode === "capture"
+          ? "截图全自动会使用固定区域截图继续答题，适合页面题面不容易直接提取时使用。"
+          : "提取题面全自动会直接读取页面题干和选项文本，不使用 OCR，适合纯文本模型。";
+    }
+    renderFullAutoButton();
   }
 
   function getStoredExtraInstructions() {
@@ -1452,6 +1883,26 @@
       });
       await refreshPromptPreview({ silent: true });
       setStatus(`已切换到${nextMode === "choice" ? "选择题" : "代码题"}提示词模式。`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function handleFullAutoModeSwitch(mode) {
+    const nextMode = sanitizeFullAutoMode(mode);
+    const currentMode = getFullAutoMode();
+    if (nextMode === currentMode) {
+      return;
+    }
+
+    state.settings.fullAutoMode = nextMode;
+    syncFullAutoModeUi();
+
+    try {
+      await storageSet({
+        fullAutoMode: nextMode,
+      });
+      setStatus(`已切换到${nextMode === "capture" ? "截图全自动" : "提取题面全自动"}。`);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
     }
@@ -1489,6 +1940,7 @@
   async function handleCaptureImageFlow(options = {}) {
     openPanel();
     const mode = options.mode === "fixedRegion" ? "fixedRegion" : "selection";
+    const promptMode = getPromptMode();
     const autoSolveRequested = Boolean(options.autoSolve);
     const autoSubmitRequested = Boolean(options.autoSubmit);
     setStatus(
@@ -1525,7 +1977,10 @@
       const useDirectImage = Boolean(state.settings.includeScreenshotInSolver);
       const autoSolveAfterCapture =
         autoSolveRequested || autoSubmitRequested || Boolean(state.settings.autoSolveAfterCapture);
-      const problem = state.problem || (await extractProblem());
+      const problem =
+        promptMode === "choice"
+          ? createEmptyProblemContext()
+          : state.problem || (await extractProblem());
       problem.screenshotDataUrl = screenshotDataUrl;
       problem.screenshotRect = rect;
       problem.ocrText = "";
@@ -1549,13 +2004,14 @@
             ? "固定区域截图已完成，准备生成答案。"
             : "这次生成会直接附带截图，不再额外做 OCR。",
         );
+        let solveResult = null;
         if (autoSolveAfterCapture) {
-          await handleSolve({ auto: true });
+          solveResult = await handleSolve({ auto: true });
         }
         if (autoSubmitRequested && state.settings.autoSubmitAfterFullCapture) {
           await handleAutoSubmit();
         }
-        return;
+        return { ok: true, problem, solveResult };
       }
 
       setStatus(
@@ -1588,14 +2044,21 @@
           ? "OCR 已完成，准备生成答案。"
           : "OCR 已完成，接下来生成会直接参考转写后的文本。",
       );
+      let solveResult = null;
       if (autoSolveAfterCapture) {
-        await handleSolve({ auto: true });
+        solveResult = await handleSolve({ auto: true });
       }
       if (autoSubmitRequested && state.settings.autoSubmitAfterFullCapture) {
         await handleAutoSubmit();
       }
+      return { ok: true, problem, solveResult };
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error));
+      const message = error instanceof Error ? error.message : String(error);
+      setStatus(message);
+      return {
+        ok: false,
+        error: message,
+      };
     }
   }
 
@@ -1896,6 +2359,7 @@
 
   async function handlePasteCode(options = {}) {
     const auto = Boolean(options.auto);
+    const mode = getPromptMode();
     const source = auto ? "clipboard-auto" : "clipboard-manual";
     const statusPrefix = auto ? "已自动同步" : "已用";
 
@@ -1910,6 +2374,13 @@
           setStatus("剪贴板里没有读取到代码。");
         }
         return { updated: false, text: "" };
+      }
+
+      if (!state.problem && mode === "choice") {
+        if (!auto) {
+          setStatus("选择题模式不会自动提取题面，已跳过剪贴板同步。");
+        }
+        return { updated: false, text: clipboardText };
       }
 
       const problem = state.problem || (await extractProblem());
@@ -2023,10 +2494,12 @@
 
   async function extractProblem() {
     const editorResult = await readCurrentCode();
+    const zhihuishuQuestion = extractZhihuishuQuestionBlock();
     const titleElement = firstVisible([
       "#task-left-panel .task-header h3",
       "#task-left-panel h3",
       "h1",
+      ".questionContent .questionTitle",
       "[class*='problem-title']",
       "[class*='question-title']",
       ".title",
@@ -2042,9 +2515,13 @@
       "main",
     ]);
 
-    const title = normalizeText(titleElement?.innerText || document.title || "未识别标题");
-    const statementText = normalizeText(statementElement?.innerText || "");
-    const statementHtml = statementElement?.innerHTML || "";
+    const title = normalizeText(
+      zhihuishuQuestion?.title || titleElement?.innerText || document.title || "未识别标题",
+    );
+    const statementText = normalizeText(
+      zhihuishuQuestion?.statementText || statementElement?.innerText || "",
+    );
+    const statementHtml = zhihuishuQuestion?.statementHtml || statementElement?.innerHTML || "";
     const samples = extractSamples();
     const language = detectLanguage();
     const limits = extractLimits();
@@ -2070,6 +2547,59 @@
       ocrText: state.problem?.ocrText || "",
       ocrModel: state.problem?.ocrModel || "",
       ocrSkipped: Boolean(state.problem?.ocrSkipped),
+    };
+  }
+
+  function extractZhihuishuQuestionBlock() {
+    const questionRoot = firstVisible([
+      ".questionContent",
+      ".ques-detail .questionContent",
+      "div[class*='questionContent']",
+    ]);
+    if (!(questionRoot instanceof Element)) {
+      return null;
+    }
+
+    const typeText = normalizeText(
+      questionRoot.querySelector(".questionTitle .letterSortNum, .questionTitle")?.textContent || "",
+    );
+    const stemText = normalizeText(
+      questionRoot.querySelector(
+        ".questionName .centent-pre .preStyle, .questionName pre.preStyle, .questionName .preStyle, .centent-pre .preStyle",
+      )?.textContent || "",
+    );
+    const optionNodes = Array.from(questionRoot.querySelectorAll(".radio-view li, .checkbox-view li"));
+    const options = optionNodes
+      .map((item) => {
+        const label = normalizeText(item.querySelector(".letterSort")?.textContent || "");
+        const value = normalizeText(item.querySelector(".stem, .preStyle")?.textContent || "");
+        if (label && value) {
+          return `${label} ${value}`;
+        }
+        const wholeLine = normalizeText(item.textContent || "");
+        return wholeLine || "";
+      })
+      .filter(Boolean);
+
+    if (!stemText && options.length === 0) {
+      return null;
+    }
+
+    const statementParts = [];
+    if (typeText) {
+      statementParts.push(typeText);
+    }
+    if (stemText) {
+      statementParts.push(stemText);
+    }
+    if (options.length > 0) {
+      statementParts.push(options.join("\n"));
+    }
+
+    return {
+      title: [typeText, stemText].filter(Boolean).join(" ").slice(0, 120),
+      statementText: statementParts.join("\n"),
+      statementHtml: questionRoot.innerHTML || "",
     };
   }
 
@@ -2203,6 +2733,34 @@
     elements.details.textContent = JSON.stringify(problem, null, 2);
     renderScreenshotStatus(problem);
     renderOcrText(problem.ocrText || "");
+  }
+
+  function createEmptyProblemContext() {
+    const limits = extractLimits();
+    return {
+      url: location.href,
+      title: normalizeText(document.title || "未识别标题"),
+      statementText: "",
+      statementHtml: "",
+      currentCode: "",
+      currentCodeLineCount: 0,
+      currentCodeSource: "empty",
+      currentCodeDebug: {
+        source: "empty",
+      },
+      samples: [],
+      limits: {
+        language: detectLanguage(),
+        time: limits.time,
+        memory: limits.memory,
+      },
+      screenshotDataUrl: state.problem?.screenshotDataUrl || "",
+      screenshotRect: state.problem?.screenshotRect || null,
+      screenshotMode: state.problem?.screenshotMode || "",
+      ocrText: state.problem?.ocrText || "",
+      ocrModel: state.problem?.ocrModel || "",
+      ocrSkipped: Boolean(state.problem?.ocrSkipped),
+    };
   }
 
   function buildProblemExportPayload() {
@@ -2702,13 +3260,7 @@
       if (!syncResult?.updated || !hasMeaningfulCode(syncResult.text)) {
         return;
       }
-
-      if (state.lastAutoSolveCode === syncResult.text && state.result?.code) {
-        return;
-      }
-
-      setStatus("检测到你复制了编辑器代码，正在自动生成答案...");
-      void handleSolve({ auto: true, sourceCode: syncResult.text });
+      setStatus("已自动同步剪贴板代码。点击“生成答案”后再提交。");
     } finally {
       state.clipboardSyncPending = false;
     }
@@ -2773,6 +3325,78 @@
 
   function normalizeCode(value) {
     return String(value || "").replace(/\u00a0/g, " ").replace(/\r\n/g, "\n");
+  }
+
+  function normalizeFullAutoDelay(value) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) {
+      return 3000;
+    }
+    return Math.min(15000, Math.max(500, Math.round(parsed)));
+  }
+
+  function getPageFingerprint() {
+    const assistantText = normalizeText(document.getElementById(HOST_ID)?.innerText || "");
+    const bodyText = normalizeText(document.body?.innerText || "")
+      .replace(assistantText, "")
+      .slice(0, 4000);
+    return `${location.href}::${hashText(`${document.title}\n${bodyText}`)}`;
+  }
+
+  function hashText(value) {
+    const text = String(value || "");
+    let hash = 0;
+    for (let index = 0; index < text.length; index += 1) {
+      hash = (hash * 31 + text.charCodeAt(index)) >>> 0;
+    }
+    return hash.toString(16);
+  }
+
+  async function waitForNextQuestion(previousFingerprint, runToken) {
+    const fixedDelayMs = normalizeFullAutoDelay(state.settings.fullAutoNextDelayMs);
+    const timeoutMs = fixedDelayMs + 8000;
+    const startTime = Date.now();
+
+    while (Date.now() - startTime < fixedDelayMs) {
+      if (runToken !== state.fullAutoRunToken || state.fullAutoStopRequested) {
+        return false;
+      }
+      await delay(120);
+    }
+
+    while (Date.now() - startTime < timeoutMs) {
+      if (runToken !== state.fullAutoRunToken || state.fullAutoStopRequested) {
+        return false;
+      }
+
+      await delay(350);
+      if (getPageFingerprint() !== previousFingerprint) {
+        await delay(900);
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  function resetProblemForNextAutoRound() {
+    state.problem = null;
+    state.result = null;
+    state.lastAutoSolveCode = "";
+    state.promptPreview = null;
+    markResultReady(false);
+    renderGeneratedTitle("");
+    renderCurrentClassification(null);
+    renderPromptPreview("正在等待下一题内容...");
+    renderScreenshotStatus(null);
+    renderOcrText("");
+    renderChoiceAnswer("");
+    if (elements.approach) {
+      elements.approach.textContent = "正在等待下一题...";
+    }
+    if (elements.code) {
+      elements.code.value = "";
+    }
   }
 
   function delay(ms) {

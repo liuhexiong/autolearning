@@ -17,11 +17,14 @@ const DEFAULT_SETTINGS = {
   screenshotShortcut: "Alt+Shift+S",
   fullPageScreenshotShortcut: "Alt+Shift+F",
   autoSubmitAfterFullCapture: false,
+  fullAutoNextDelayMs: 3000,
+  fullAutoMode: "extract",
   ocrBaseUrl: "",
   ocrApiKey: "",
   ocrModel: "",
   ocrPrompt:
     "请只做 OCR，尽量完整提取图片中的中文、英文、公式、选项和输入输出要求。不要解释，不要总结，只返回纯文本。",
+  historyLimit: 50,
 };
 
 const form = document.getElementById("settings-form");
@@ -50,11 +53,13 @@ form.addEventListener("submit", async (event) => {
       normalizeShortcut(document.getElementById("fullPageScreenshotShortcut").value) ||
       DEFAULT_SETTINGS.fullPageScreenshotShortcut,
     autoSubmitAfterFullCapture: document.getElementById("autoSubmitAfterFullCapture").checked,
+    fullAutoNextDelayMs: normalizeDelayInput(document.getElementById("fullAutoNextDelayMs").value),
     ocrBaseUrl: document.getElementById("ocrBaseUrl").value.trim(),
     ocrApiKey: document.getElementById("ocrApiKey").value.trim(),
     ocrModel: document.getElementById("ocrModel").value.trim(),
     ocrPrompt: document.getElementById("ocrPrompt").value.trim(),
     extraInstructions: document.getElementById("extraInstructionsCode").value.trim(),
+    historyLimit: normalizeHistoryLimitInput(document.getElementById("historyLimit").value),
     temperature: DEFAULT_SETTINGS.temperature,
   };
 
@@ -106,10 +111,16 @@ async function hydrateForm() {
   document.getElementById("autoSubmitAfterFullCapture").checked = Boolean(
     values.autoSubmitAfterFullCapture,
   );
+  document.getElementById("fullAutoNextDelayMs").value = String(
+    normalizeDelayInput(values.fullAutoNextDelayMs),
+  );
   document.getElementById("ocrBaseUrl").value = values.ocrBaseUrl || "";
   document.getElementById("ocrApiKey").value = values.ocrApiKey || "";
   document.getElementById("ocrModel").value = values.ocrModel || "";
   document.getElementById("ocrPrompt").value = values.ocrPrompt || "";
+  document.getElementById("historyLimit").value = String(
+    normalizeHistoryLimitInput(values.historyLimit),
+  );
 }
 
 function storageGet(defaults) {
@@ -138,6 +149,22 @@ function storageSet(values) {
 
 function setStatus(text) {
   statusNode.textContent = text;
+}
+
+function normalizeHistoryLimitInput(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return DEFAULT_SETTINGS.historyLimit;
+  }
+  return Math.min(500, Math.max(10, Math.round(parsed)));
+}
+
+function normalizeDelayInput(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return DEFAULT_SETTINGS.fullAutoNextDelayMs;
+  }
+  return Math.min(15000, Math.max(500, Math.round(parsed)));
 }
 
 function normalizeShortcut(value) {

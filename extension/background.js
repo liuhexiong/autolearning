@@ -17,14 +17,18 @@ const DEFAULT_SETTINGS = {
   screenshotShortcut: "Alt+Shift+S",
   fullPageScreenshotShortcut: "Alt+Shift+F",
   autoSubmitAfterFullCapture: false,
+  fullAutoNextDelayMs: 3000,
+  fullAutoMode: "extract",
   ocrBaseUrl: "",
   ocrApiKey: "",
   ocrModel: "",
   ocrPrompt:
     "请只做 OCR，尽量完整提取图片中的中文、英文、公式、选项和输入输出要求。不要解释，不要总结，只返回纯文本。",
+  historyLimit: 50,
 };
 const HISTORY_STORAGE_KEY = "autolearningSolveHistory";
-const MAX_HISTORY_ITEMS = 50;
+const MIN_HISTORY_ITEMS = 10;
+const MAX_HISTORY_ITEMS = 500;
 
 chrome.runtime.onInstalled.addListener(async () => {
   const current = await storageGet(DEFAULT_SETTINGS);
@@ -655,6 +659,8 @@ async function clearSolveHistory() {
 }
 
 async function appendSolveHistory(problem, result) {
+  const settings = await storageGet(DEFAULT_SETTINGS);
+  const historyLimit = normalizeHistoryLimit(settings?.historyLimit);
   const history = await getSolveHistory();
   const nextItem = {
     id: `solve-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
@@ -674,8 +680,16 @@ async function appendSolveHistory(problem, result) {
   };
 
   await storageSet({
-    [HISTORY_STORAGE_KEY]: [nextItem, ...history].slice(0, MAX_HISTORY_ITEMS),
+    [HISTORY_STORAGE_KEY]: [nextItem, ...history].slice(0, historyLimit),
   });
+}
+
+function normalizeHistoryLimit(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return DEFAULT_SETTINGS.historyLimit;
+  }
+  return Math.min(MAX_HISTORY_ITEMS, Math.max(MIN_HISTORY_ITEMS, Math.round(parsed)));
 }
 
 function extractJsonCandidate(text) {

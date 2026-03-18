@@ -140,6 +140,20 @@
           </label>
 
           <label class="field">
+            <span>全自动下一题等待时间（毫秒）</span>
+            <input
+              id="fullAutoNextDelayMs"
+              name="fullAutoNextDelayMs"
+              type="number"
+              min="500"
+              max="15000"
+              step="100"
+              placeholder="3000"
+            />
+            <small>全自动模式点击“下一题”后，至少固定等待多久再继续处理下一题。数值越大越稳，但整体速度会更慢。</small>
+          </label>
+
+          <label class="field">
             <span>OCR Base URL</span>
             <input
               id="ocrBaseUrl"
@@ -181,6 +195,20 @@
               placeholder="请只做 OCR，尽量完整提取图片中的文字与公式，只返回纯文本。"
             ></textarea>
             <small>给 OCR 模型的专用提示词，建议只让它返回纯文本。</small>
+          </label>
+
+          <label class="field">
+            <span>搜题记录上限</span>
+            <input
+              id="historyLimit"
+              name="historyLimit"
+              type="number"
+              min="10"
+              max="500"
+              step="1"
+              placeholder="50"
+            />
+            <small>控制最多保留多少条搜题记录，范围 10 到 500。</small>
           </label>
 
           <div class="actions">
