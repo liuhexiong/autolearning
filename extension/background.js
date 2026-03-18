@@ -4,24 +4,31 @@ const DEFAULT_CODE_PROMPT =
   "当前页面大概率是编程题、代码填空题或需要补全模板的题。请优先保留题目指定语言、函数签名、输入输出格式和已有代码骨架，只补上真正缺失的部分。若页面自带代码与题面冲突，优先相信题面和样例。code 字段只放最终可提交或可复制的内容，不要在 code 里混入解释。尽量给出最稳妥、最容易通过样例和评测的做法。";
 
 const DEFAULT_SETTINGS = {
-  baseUrl: "https://api.openai.com/v1",
-  apiKey: "",
-  model: "gpt-4.1-mini",
+  baseUrl: "https://api.deepseek.com/v1",
+  apiKey: "sk-9a70b94a7ec04788952e228c62529c54",
+  textBaseUrl: "https://api.deepseek.com/v1",
+  textApiKey: "sk-9a70b94a7ec04788952e228c62529c54",
+  model: "deepseek-chat",
+  textModel: "deepseek-chat",
+  imageBaseUrl: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+  imageApiKey: "sk-9101f75ca6b24400953e03ba4cc283a5",
+  imageModel: "qwen3.5-flash",
   promptMode: "code",
   extraInstructions: DEFAULT_CODE_PROMPT,
   extraInstructionsChoice: DEFAULT_CHOICE_PROMPT,
   extraInstructionsCode: DEFAULT_CODE_PROMPT,
   temperature: 0.2,
-  includeScreenshotInSolver: false,
-  autoSolveAfterCapture: false,
+  includeScreenshotInSolver: true,
+  autoSolveAfterCapture: true,
   screenshotShortcut: "Alt+Shift+S",
   fullPageScreenshotShortcut: "Alt+Shift+F",
   autoSubmitAfterFullCapture: false,
-  fullAutoNextDelayMs: 3000,
+  fullAutoNextDelayMs: 1500,
+  autoPickNextDelayMs: 600,
   fullAutoMode: "extract",
-  ocrBaseUrl: "",
-  ocrApiKey: "",
-  ocrModel: "",
+  ocrBaseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
+  ocrApiKey: "AIzaSyCt9CvmNYNcX8CGe5k9TLVt_jPNH9veRCc",
+  ocrModel: "gemini-3-preview",
   ocrPrompt:
     "请只做 OCR，尽量完整提取图片中的中文、英文、公式、选项和输入输出要求。不要解释，不要总结，只返回纯文本。",
   historyLimit: 50,
@@ -29,6 +36,7 @@ const DEFAULT_SETTINGS = {
 const HISTORY_STORAGE_KEY = "autolearningSolveHistory";
 const MIN_HISTORY_ITEMS = 10;
 const MAX_HISTORY_ITEMS = 500;
+const ACTIVE_SOLVE_CONTROLLERS = new Map();
 
 chrome.runtime.onInstalled.addListener(async () => {
   const current = await storageGet(DEFAULT_SETTINGS);
@@ -44,9 +52,32 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message?.type === "autolearning:solve-problem") {
-    solveProblem(message.problem, message.extraInstructions)
-      .then((result) => sendResponse({ ok: true, result }))
-      .catch((error) => sendResponse({ ok: false, error: formatError(error) }));
+    const requestId =
+      typeof message.requestId === "string" && message.requestId.trim()
+        ? message.requestId.trim()
+        : `solve-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const controller = new AbortController();
+    ACTIVE_SOLVE_CONTROLLERS.set(requestId, controller);
+
+    solveProblem(message.problem, message.extraInstructions, controller)
+      .then((result) => sendResponse({ ok: true, result, requestId }))
+      .catch((error) => sendResponse({ ok: false, error: formatError(error), requestId }))
+      .finally(() => {
+        ACTIVE_SOLVE_CONTROLLERS.delete(requestId);
+      });
+    return true;
+  }
+
+  if (message?.type === "autolearning:cancel-solve") {
+    const requestId = typeof message.requestId === "string" ? message.requestId.trim() : "";
+    const controller = requestId ? ACTIVE_SOLVE_CONTROLLERS.get(requestId) : null;
+    if (!controller) {
+      sendResponse({ ok: false, error: "当前没有可取消的请求。" });
+      return false;
+    }
+
+    controller.abort(new Error("请求已取消"));
+    sendResponse({ ok: true, requestId });
     return true;
   }
 
@@ -223,7 +254,7 @@ function buildSolverPrompt(problem, extraInstructions, promptMode = "code") {
     .join("\n");
 }
 
-async function solveProblem(problem, extraInstructionsOverride) {
+async function solveProblem(problem, extraInstructionsOverride, externalController = null) {
   if (!problem || typeof problem !== "object") {
     throw new Error("没有收到有效题目信息。");
   }
@@ -231,9 +262,6 @@ async function solveProblem(problem, extraInstructionsOverride) {
   const settings = await storageGet(DEFAULT_SETTINGS);
   const extraInstructions = normalizeExtraInstructions(extraInstructionsOverride, settings);
   const promptMode = getPromptMode(settings);
-  if (!settings.apiKey || !String(settings.apiKey).trim()) {
-    throw new Error("请先在插件设置页填写 API Key。");
-  }
 
   const messages = buildSolverMessages(
     problem,
@@ -241,20 +269,20 @@ async function solveProblem(problem, extraInstructionsOverride) {
     Boolean(settings.includeScreenshotInSolver),
     promptMode,
   );
-
-  const url = normalizeBaseUrl(settings.baseUrl);
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 90000);
+  const solverConfig = resolveSolverConfig(settings, messages[1]?.content);
+  const url = normalizeBaseUrl(solverConfig.baseUrl);
+  const controller = externalController instanceof AbortController ? externalController : new AbortController();
+  const timeout = setTimeout(() => controller.abort(new Error("请求超时")), 90000);
 
   try {
     const response = await fetch(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${String(settings.apiKey).trim()}`,
+        Authorization: `Bearer ${solverConfig.apiKey}`,
       },
       body: JSON.stringify({
-        model: settings.model,
+        model: solverConfig.model,
         temperature: Number(settings.temperature ?? 0.2),
         messages,
       }),
@@ -295,7 +323,7 @@ async function solveProblem(problem, extraInstructionsOverride) {
     }
 
     const result = {
-      model: settings.model,
+      model: solverConfig.model,
       promptPreview: extractTextContent(messages[1]?.content).slice(0, 1200),
       generatedTitle: parsed.generatedTitle,
       summary: parsed.summary,
@@ -328,9 +356,10 @@ async function buildPromptPreview(problem, extraInstructionsOverride) {
     Boolean(settings.includeScreenshotInSolver),
     promptMode,
   );
+  const solverConfig = resolveSolverConfig(settings, messages[1]?.content);
 
   return {
-    model: settings.model,
+    model: solverConfig.model,
     promptMode,
     temperature: Number(settings.temperature ?? 0.2),
     extraInstructions,
@@ -343,10 +372,8 @@ async function buildPromptPreview(problem, extraInstructionsOverride) {
 
 function buildSolverMessages(problem, extraInstructions, includeScreenshotInSolver, promptMode = "code") {
   const userPrompt = buildSolverPrompt(problem, extraInstructions, promptMode);
-  const shouldAttachScreenshot =
-    Boolean(includeScreenshotInSolver) &&
-    typeof problem?.screenshotDataUrl === "string" &&
-    problem.screenshotDataUrl.startsWith("data:image/");
+  const screenshotItems = getScreenshotItems(problem);
+  const shouldAttachScreenshot = Boolean(includeScreenshotInSolver) && screenshotItems.length > 0;
   const mode = getPromptMode({ promptMode });
 
   return [
@@ -365,16 +392,32 @@ function buildSolverMessages(problem, extraInstructions, includeScreenshotInSolv
               type: "text",
               text: userPrompt,
             },
-            {
+            ...screenshotItems.map((item) => ({
               type: "image_url",
               image_url: {
-                url: problem.screenshotDataUrl,
+                url: item.dataUrl,
               },
-            },
+            })),
           ]
         : userPrompt,
     },
   ];
+}
+
+function getScreenshotItems(problem) {
+  if (Array.isArray(problem?.screenshotItems) && problem.screenshotItems.length > 0) {
+    return problem.screenshotItems
+      .map((item) => ({
+        dataUrl: typeof item?.dataUrl === "string" ? item.dataUrl : "",
+      }))
+      .filter((item) => item.dataUrl.startsWith("data:image/"));
+  }
+
+  if (typeof problem?.screenshotDataUrl === "string" && problem.screenshotDataUrl.startsWith("data:image/")) {
+    return [{ dataUrl: problem.screenshotDataUrl }];
+  }
+
+  return [];
 }
 
 function normalizeExtraInstructions(overrideValue, settings) {
@@ -391,6 +434,56 @@ function normalizeExtraInstructions(overrideValue, settings) {
 
 function getPromptMode(settings) {
   return settings?.promptMode === "choice" ? "choice" : "code";
+}
+
+function resolveSolverConfig(settings, userContent) {
+  const legacyBaseUrl = String(settings?.baseUrl || "").trim();
+  const legacyApiKey = String(settings?.apiKey || "").trim();
+  const legacyModel = String(settings?.model || "").trim();
+  const textBaseUrl = String(settings?.textBaseUrl || legacyBaseUrl || "").trim();
+  const textApiKey = String(settings?.textApiKey || legacyApiKey || "").trim();
+  const textModel = String(settings?.textModel || legacyModel || "").trim();
+  const imageBaseUrl = String(settings?.imageBaseUrl || textBaseUrl || legacyBaseUrl || "").trim();
+  const imageApiKey = String(settings?.imageApiKey || textApiKey || legacyApiKey || "").trim();
+  const imageModel = String(settings?.imageModel || textModel || legacyModel || "").trim();
+  const shouldUseImageModel = hasImageInMessage(userContent);
+  const selectedConfig = shouldUseImageModel
+    ? {
+        baseUrl: imageBaseUrl,
+        apiKey: imageApiKey,
+        model: imageModel,
+      }
+    : {
+        baseUrl: textBaseUrl,
+        apiKey: textApiKey,
+        model: textModel,
+      };
+
+  if (!selectedConfig.baseUrl) {
+    throw new Error(
+      shouldUseImageModel
+        ? "请先在设置页填写图像 Base URL。"
+        : "请先在设置页填写文本 Base URL。",
+    );
+  }
+
+  if (!selectedConfig.apiKey) {
+    throw new Error(
+      shouldUseImageModel
+        ? "请先在设置页填写图像 API Key。"
+        : "请先在设置页填写文本 API Key。",
+    );
+  }
+
+  if (!selectedConfig.model) {
+    throw new Error(
+      shouldUseImageModel
+        ? "请先在设置页填写图像模型。"
+        : "请先在设置页填写文本模型。",
+    );
+  }
+
+  return selectedConfig;
 }
 
 async function captureVisibleTab(sender) {
@@ -716,8 +809,18 @@ function stripCodeFence(text) {
 }
 
 function formatError(error) {
+  if (isAbortLikeError(error)) {
+    return "请求已取消";
+  }
   if (error instanceof Error) {
     return error.message;
   }
   return String(error || "未知错误");
+}
+
+function isAbortLikeError(error) {
+  return (
+    error?.name === "AbortError" ||
+    (error instanceof Error && /aborted|abort|取消/u.test(error.message || ""))
+  );
 }

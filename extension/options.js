@@ -4,24 +4,31 @@ const DEFAULT_CODE_PROMPT =
   "当前页面大概率是编程题、代码填空题或需要补全模板的题。请优先保留题目指定语言、函数签名、输入输出格式和已有代码骨架，只补上真正缺失的部分。若页面自带代码与题面冲突，优先相信题面和样例。code 字段只放最终可提交或可复制的内容，不要在 code 里混入解释。尽量给出最稳妥、最容易通过样例和评测的做法。";
 
 const DEFAULT_SETTINGS = {
-  baseUrl: "https://api.openai.com/v1",
-  apiKey: "",
-  model: "gpt-4.1-mini",
+  baseUrl: "https://api.deepseek.com/v1",
+  apiKey: "sk-9a70b94a7ec04788952e228c62529c54",
+  textBaseUrl: "https://api.deepseek.com/v1",
+  textApiKey: "sk-9a70b94a7ec04788952e228c62529c54",
+  model: "deepseek-chat",
+  textModel: "deepseek-chat",
+  imageBaseUrl: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+  imageApiKey: "sk-9101f75ca6b24400953e03ba4cc283a5",
+  imageModel: "qwen3.5-flash",
   promptMode: "code",
   extraInstructions: DEFAULT_CODE_PROMPT,
   extraInstructionsChoice: DEFAULT_CHOICE_PROMPT,
   extraInstructionsCode: DEFAULT_CODE_PROMPT,
   temperature: 0.2,
-  includeScreenshotInSolver: false,
-  autoSolveAfterCapture: false,
+  includeScreenshotInSolver: true,
+  autoSolveAfterCapture: true,
   screenshotShortcut: "Alt+Shift+S",
   fullPageScreenshotShortcut: "Alt+Shift+F",
   autoSubmitAfterFullCapture: false,
-  fullAutoNextDelayMs: 3000,
+  fullAutoNextDelayMs: 1500,
+  autoPickNextDelayMs: 600,
   fullAutoMode: "extract",
-  ocrBaseUrl: "",
-  ocrApiKey: "",
-  ocrModel: "",
+  ocrBaseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
+  ocrApiKey: "AIzaSyCt9CvmNYNcX8CGe5k9TLVt_jPNH9veRCc",
+  ocrModel: "gemini-3-preview",
   ocrPrompt:
     "请只做 OCR，尽量完整提取图片中的中文、英文、公式、选项和输入输出要求。不要解释，不要总结，只返回纯文本。",
   historyLimit: 50,
@@ -39,9 +46,15 @@ form.addEventListener("submit", async (event) => {
   event.preventDefault();
 
   const values = {
-    baseUrl: document.getElementById("baseUrl").value.trim(),
-    apiKey: document.getElementById("apiKey").value.trim(),
-    model: document.getElementById("model").value.trim(),
+    baseUrl: document.getElementById("textBaseUrl").value.trim(),
+    apiKey: document.getElementById("textApiKey").value.trim(),
+    textBaseUrl: document.getElementById("textBaseUrl").value.trim(),
+    textApiKey: document.getElementById("textApiKey").value.trim(),
+    model: document.getElementById("textModel").value.trim(),
+    textModel: document.getElementById("textModel").value.trim(),
+    imageBaseUrl: document.getElementById("imageBaseUrl").value.trim(),
+    imageApiKey: document.getElementById("imageApiKey").value.trim(),
+    imageModel: document.getElementById("imageModel").value.trim(),
     extraInstructionsChoice: document.getElementById("extraInstructionsChoice").value.trim(),
     extraInstructionsCode: document.getElementById("extraInstructionsCode").value.trim(),
     includeScreenshotInSolver: document.getElementById("includeScreenshotInSolver").checked,
@@ -54,6 +67,7 @@ form.addEventListener("submit", async (event) => {
       DEFAULT_SETTINGS.fullPageScreenshotShortcut,
     autoSubmitAfterFullCapture: document.getElementById("autoSubmitAfterFullCapture").checked,
     fullAutoNextDelayMs: normalizeDelayInput(document.getElementById("fullAutoNextDelayMs").value),
+    autoPickNextDelayMs: normalizeAutoPickDelayInput(document.getElementById("autoPickNextDelayMs").value),
     ocrBaseUrl: document.getElementById("ocrBaseUrl").value.trim(),
     ocrApiKey: document.getElementById("ocrApiKey").value.trim(),
     ocrModel: document.getElementById("ocrModel").value.trim(),
@@ -92,9 +106,14 @@ restoreCodePromptButton.addEventListener("click", async () => {
 
 async function hydrateForm() {
   const values = await storageGet(DEFAULT_SETTINGS);
-  document.getElementById("baseUrl").value = values.baseUrl || "";
-  document.getElementById("apiKey").value = values.apiKey || "";
-  document.getElementById("model").value = values.model || "";
+  document.getElementById("textBaseUrl").value = values.textBaseUrl || values.baseUrl || "";
+  document.getElementById("textApiKey").value = values.textApiKey || values.apiKey || "";
+  document.getElementById("textModel").value = values.textModel || values.model || "";
+  document.getElementById("imageBaseUrl").value =
+    values.imageBaseUrl || values.textBaseUrl || values.baseUrl || "";
+  document.getElementById("imageApiKey").value =
+    values.imageApiKey || values.textApiKey || values.apiKey || "";
+  document.getElementById("imageModel").value = values.imageModel || values.textModel || values.model || "";
   document.getElementById("extraInstructionsChoice").value =
     values.extraInstructionsChoice || DEFAULT_CHOICE_PROMPT;
   document.getElementById("extraInstructionsCode").value =
@@ -113,6 +132,9 @@ async function hydrateForm() {
   );
   document.getElementById("fullAutoNextDelayMs").value = String(
     normalizeDelayInput(values.fullAutoNextDelayMs),
+  );
+  document.getElementById("autoPickNextDelayMs").value = String(
+    normalizeAutoPickDelayInput(values.autoPickNextDelayMs),
   );
   document.getElementById("ocrBaseUrl").value = values.ocrBaseUrl || "";
   document.getElementById("ocrApiKey").value = values.ocrApiKey || "";
@@ -165,6 +187,14 @@ function normalizeDelayInput(value) {
     return DEFAULT_SETTINGS.fullAutoNextDelayMs;
   }
   return Math.min(15000, Math.max(500, Math.round(parsed)));
+}
+
+function normalizeAutoPickDelayInput(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return DEFAULT_SETTINGS.autoPickNextDelayMs;
+  }
+  return Math.min(5000, Math.max(100, Math.round(parsed)));
 }
 
 function normalizeShortcut(value) {

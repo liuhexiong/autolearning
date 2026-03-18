@@ -3,13 +3,13 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>AutoLearning 设置</title>
+    <title>学习助手 设置</title>
     <link rel="stylesheet" href="options.css" />
   </head>
   <body>
     <main class="page">
       <section class="hero">
-        <p class="eyebrow">AutoLearning</p>
+        <p class="eyebrow">学习助手</p>
         <h1>浏览器插件设置</h1>
         <p class="hero-text">
           填好模型接口之后，插件就可以在题目页里直接识别题面、生成答案并填充回编辑器。
@@ -19,22 +19,22 @@
       <section class="card">
         <form id="settings-form" class="form">
           <label class="field">
-            <span>Base URL</span>
+            <span>文本 Base URL</span>
             <input
-              id="baseUrl"
-              name="baseUrl"
+              id="textBaseUrl"
+              name="textBaseUrl"
               type="url"
               placeholder="https://api.openai.com/v1"
               required
             />
-            <small>支持 OpenAI / OpenRouter / 其他 OpenAI 兼容接口。</small>
+            <small>纯文本请求走这个接口，比如提取题面全自动、普通题面分析、纯文本答题。</small>
           </label>
 
           <label class="field">
-            <span>API Key</span>
+            <span>文本 API Key</span>
             <input
-              id="apiKey"
-              name="apiKey"
+              id="textApiKey"
+              name="textApiKey"
               type="password"
               placeholder="sk-..."
               autocomplete="off"
@@ -43,14 +43,51 @@
           </label>
 
           <label class="field">
-            <span>Model</span>
+            <span>文本模型</span>
             <input
-              id="model"
-              name="model"
+              id="textModel"
+              name="textModel"
               type="text"
               placeholder="gpt-4.1-mini"
               required
             />
+            <small>纯文本提问时使用这个模型，比如“提取题面全自动”或普通题面分析。</small>
+          </label>
+
+          <label class="field">
+            <span>图像 Base URL</span>
+            <input
+              id="imageBaseUrl"
+              name="imageBaseUrl"
+              type="url"
+              placeholder="https://api.openai.com/v1"
+              required
+            />
+            <small>当本次请求里真的附带了截图时，固定走这个接口。即使同时有文本和图像，也优先走图像接口。</small>
+          </label>
+
+          <label class="field">
+            <span>图像 API Key</span>
+            <input
+              id="imageApiKey"
+              name="imageApiKey"
+              type="password"
+              placeholder="sk-..."
+              autocomplete="off"
+            />
+            <small>如果图像模型来自另一家服务商，就在这里填写那家的 Key。</small>
+          </label>
+
+          <label class="field">
+            <span>图像模型</span>
+            <input
+              id="imageModel"
+              name="imageModel"
+              type="text"
+              placeholder="gpt-4.1-mini"
+              required
+            />
+            <small>当本次请求里实际附带了截图时，固定使用这个模型。即使同时有文本和图像，也会优先走图像模型。</small>
           </label>
 
           <div class="field">
@@ -151,6 +188,20 @@
               placeholder="3000"
             />
             <small>全自动模式点击“下一题”后，至少固定等待多久再继续处理下一题。数值越大越稳，但整体速度会更慢。</small>
+          </label>
+
+          <label class="field">
+            <span>自动勾选后等待时间（毫秒）</span>
+            <input
+              id="autoPickNextDelayMs"
+              name="autoPickNextDelayMs"
+              type="number"
+              min="100"
+              max="5000"
+              step="50"
+              placeholder="600"
+            />
+            <small>选择题模式下，AI 返回答案后，自动点击“下一题”前会额外等待多久。若页面勾选选项较慢，可以把这里调大。</small>
           </label>
 
           <label class="field">
