@@ -1414,11 +1414,19 @@
           throw new Error(solveResult?.error || "全自动模式没有拿到有效答案。");
         }
 
+        const choiceAnswerText = String(solveResult.choiceAnswerText || "").trim();
         if (!solveResult.autoPickResult?.ok) {
-          throw new Error(
-            fullAutoMode === "capture"
-              ? "这一题没有成功自动选择选项，请检查截图区域、OCR 结果或答案格式。"
-              : "这一题没有成功自动选择选项，请检查题面提取结果或答案格式。",
+          // Some pages do not expose stable "selected" DOM states. In full-auto mode,
+          // prioritize continuity: if we already have an answer, keep going.
+          if (!choiceAnswerText) {
+            throw new Error(
+              fullAutoMode === "capture"
+                ? "这一题没有拿到有效答案，请检查截图区域、OCR 结果或答案格式。"
+                : "这一题没有拿到有效答案，请检查题面提取结果或答案格式。",
+            );
+          }
+          setStatus(
+            `第 ${state.fullAutoRound} 题已拿到答案 ${choiceAnswerText}，未确认选中态，继续尝试下一题...`,
           );
         }
 
@@ -1548,9 +1556,7 @@
       return { ok: false, labels: [], error: "答案不是 A/B/C/D 或 对/错 格式。" };
     }
 
-    const items = Array.from(
-      document.querySelectorAll("ul.radio-view li, ul.checkbox-view li, .radio-view li, .checkbox-view li"),
-    );
+    const items = collectChoiceItems();
     if (items.length === 0) {
       return { ok: false, labels: [], error: "页面没有找到可点击的选项列表。" };
     }
@@ -1561,11 +1567,20 @@
         items.find((candidate) => matchesChoiceItemByLabel(candidate, label)) ||
         items.find((candidate, index) => matchesChoiceItemBySemanticFallback(candidate, label, index));
       if (!item) {
+        const selectedMatch =
+          items.find((candidate) => isChoiceItemSelected(candidate) && matchesChoiceItemByLabel(candidate, label)) ||
+          items.find(
+            (candidate, index) =>
+              isChoiceItemSelected(candidate) && matchesChoiceItemBySemanticFallback(candidate, label, index),
+          );
+        if (selectedMatch) {
+          picked.push(label);
+        }
         continue;
       }
 
       const clicked = await clickChoiceItem(item);
-      if (clicked) {
+      if (clicked || isChoiceItemSelected(item)) {
         picked.push(label);
       }
     }
@@ -1647,6 +1662,10 @@
       );
     }
 
+    if (/^[A-D]$/.test(label)) {
+      return index === label.charCodeAt(0) - 65;
+    }
+
     return false;
   }
 
@@ -1658,6 +1677,8 @@
     if (isChoiceItemSelected(item)) {
       return true;
     }
+    const beforeSignature = getChoiceGroupSelectionSignature(item);
+    let clickTriggered = false;
 
     const candidates = [
       item.querySelector(".checkIcon"),
@@ -1678,11 +1699,19 @@
       if (!simulateUserClick(candidate)) {
         continue;
       }
+      clickTriggered = true;
 
       await delay(90);
       if (isChoiceItemSelected(item)) {
         return true;
       }
+      if (getChoiceGroupSelectionSignature(item) !== beforeSignature) {
+        return true;
+      }
+    }
+
+    if (clickTriggered && getChoiceGroupSelectionSignature(item) !== beforeSignature) {
+      return true;
     }
 
     return false;
@@ -1698,11 +1727,22 @@
       return true;
     }
 
+    const explicitSelectedMarker = item.querySelector(
+      ".is-checked, .checked, .selected, .active, [aria-checked='true'], [aria-selected='true']",
+    );
+    if (explicitSelectedMarker instanceof Element) {
+      return true;
+    }
+
     const selectedNodes = [
       item,
       item.querySelector(".checkIcon"),
       item.querySelector("label"),
       item.querySelector(".item-content"),
+      item.querySelector(".el-radio__input"),
+      item.querySelector(".el-checkbox__input"),
+      item.querySelector(".ant-radio-wrapper"),
+      item.querySelector(".ant-checkbox-wrapper"),
     ].filter(Boolean);
 
     return selectedNodes.some((node) => {
@@ -1710,16 +1750,113 @@
         return false;
       }
       const className = String(node.className || "");
-      if (/(checked|selected|active|on|current|is-checked)/i.test(className)) {
+      // Avoid matching partial words like "option" as selected.
+      if (/(?:^|\s)(?:checked|selected|active|current|is-checked|is-selected|is-active|on)(?:\s|$)/i.test(className)) {
         return true;
       }
       const ariaChecked = String(node.getAttribute("aria-checked") || "").toLowerCase();
       if (ariaChecked === "true") {
         return true;
       }
+      const ariaSelected = String(node.getAttribute("aria-selected") || "").toLowerCase();
+      if (ariaSelected === "true") {
+        return true;
+      }
       const style = window.getComputedStyle(node);
       return /(56, 107, 255|64, 117, 255|82, 102, 255)/.test(style.backgroundColor || "");
     });
+  }
+
+  function getChoiceGroupSelectionSignature(item) {
+    if (!(item instanceof Element)) {
+      return "";
+    }
+
+    const groupRoot =
+      item.closest("ul.radio-view, ul.checkbox-view, .radio-view, .checkbox-view, ul, ol") || item.parentElement;
+    const groupItems =
+      groupRoot instanceof Element ? Array.from(groupRoot.querySelectorAll("li")) : [item];
+    if (groupItems.length === 0) {
+      return isChoiceItemSelected(item) ? "self" : "";
+    }
+
+    return groupItems
+      .map((node, index) => (isChoiceItemSelected(node) ? String(index) : ""))
+      .filter(Boolean)
+      .join(",");
+  }
+
+  function collectChoiceItems() {
+    const preferred = Array.from(
+      document.querySelectorAll("ul.radio-view li, ul.checkbox-view li, .radio-view li, .checkbox-view li"),
+    ).filter((node) => node instanceof Element && isVisible(node) && !isInsideAssistant(node));
+    if (preferred.length > 0) {
+      return preferred;
+    }
+
+    const candidates = Array.from(
+      document.querySelectorAll(
+        "li, label, [role='radio'], [role='checkbox'], input[type='radio'], input[type='checkbox'], .option, .option-item, .answer-item, .el-radio, .el-checkbox, .ant-radio-wrapper, .ant-checkbox-wrapper",
+      ),
+    );
+
+    const mapped = candidates
+      .map((node) => resolveChoiceItemContainer(node))
+      .filter((node) => node instanceof Element && isVisible(node) && !isInsideAssistant(node));
+
+    const deduped = [];
+    const seen = new Set();
+    for (const node of mapped) {
+      if (!(node instanceof Element)) {
+        continue;
+      }
+      const key = `${node.tagName}:${node.className}:${normalizeText(node.textContent || "").slice(0, 120)}`;
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      deduped.push(node);
+    }
+
+    return deduped.filter((node) => looksLikeChoiceItem(node));
+  }
+
+  function resolveChoiceItemContainer(node) {
+    if (!(node instanceof Element)) {
+      return null;
+    }
+
+    if (node.matches("input[type='radio'], input[type='checkbox']")) {
+      return node.closest("li, label, div, span") || node.parentElement || node;
+    }
+
+    return node.closest("li, label, [role='radio'], [role='checkbox'], .option-item, .answer-item") || node;
+  }
+
+  function looksLikeChoiceItem(node) {
+    if (!(node instanceof Element)) {
+      return false;
+    }
+
+    const normalizedText = normalizeText(node.textContent || "").replace(/\s+/g, "");
+    if (!normalizedText) {
+      return false;
+    }
+
+    const looksLikeLabelText =
+      /^[A-D][\.\、:：\)\）]/i.test(normalizedText) ||
+      /^(对|错|正确|错误|TRUE|FALSE)/i.test(normalizedText);
+    if (looksLikeLabelText) {
+      return true;
+    }
+
+    const className = String(node.className || "").toLowerCase();
+    const mayBeChoiceClass = /(radio|checkbox|option|answer|choice|select|item)/.test(className);
+    if (!mayBeChoiceClass) {
+      return false;
+    }
+
+    return /[A-D][\.\、:：\)\）]/i.test(normalizedText) || /(对|错|正确|错误|TRUE|FALSE)/i.test(normalizedText);
   }
 
   function simulateUserClick(element) {
