@@ -13,6 +13,7 @@
   const HOST_ID = "autolearning-host";
   const POSITION_STORAGE_KEY = "autolearningLauncherPosition";
   const FIXED_CAPTURE_STORAGE_KEY = "autolearningFixedCaptureRegions";
+  const QUESTION_BANK_STORAGE_KEY = "autolearningQuestionBankV1";
   const LAUNCHER_SIZE = 62;
   const PANEL_GAP = 12;
   const PANEL_MAX_WIDTH = 420;
@@ -58,6 +59,10 @@
     promptPreview: null,
     screenshotShortcutInstalled: false,
     fixedCaptureRegion: null,
+    questionBank: {},
+    questionBankLoaded: false,
+    questionBankReviewQueue: [],
+    reviewModalOpen: false,
     settings: {
       promptMode: "code",
       extraInstructionsChoice: DEFAULT_CHOICE_PROMPT,
@@ -89,6 +94,7 @@
     installAutoClipboardSync();
     installScreenshotShortcut();
     void hydrateFixedCaptureRegion();
+    void hydrateQuestionBank();
     renderSummary("插件已在当前页面就绪。你可以直接截图、读剪贴板，或先识别当前页面内容。");
     renderGeneratedTitle("");
     renderCurrentClassification(null);
@@ -180,6 +186,7 @@
             <button data-role="extract" type="button">提取题面</button>
             <button data-role="solve" type="button" class="al-primary">生成答案</button>
             <button data-role="full-auto" type="button">开启全自动</button>
+            <button data-role="edit-question-bank" type="button">编辑题库</button>
           </div>
 
           <section class="al-section" data-role="choice-answer-wrap" hidden>
@@ -382,6 +389,9 @@
     });
     host.querySelector('[data-role="settings"]').addEventListener("click", () => {
       void handleOpenSettings();
+    });
+    host.querySelector('[data-role="edit-question-bank"]').addEventListener("click", () => {
+      void handleOpenQuestionBankEditor();
     });
     host.querySelector('[data-role="paste-code"]').addEventListener("click", () => {
       void handlePasteCode();
@@ -759,7 +769,7 @@
       }
 
       #${PANEL_ID} .al-actions-primary {
-        grid-template-columns: repeat(3, minmax(0, 1fr));
+        grid-template-columns: repeat(2, minmax(0, 1fr));
       }
 
       #${PANEL_ID} .al-actions-secondary {
@@ -1105,6 +1115,131 @@
         text-decoration: none;
       }
 
+      .al-bank-modal {
+        position: fixed;
+        inset: 0;
+        z-index: 2147483647;
+        display: grid;
+        place-items: center;
+        padding: 16px;
+        background: rgba(6, 11, 14, 0.56);
+        pointer-events: auto;
+      }
+
+      .al-bank-modal-card {
+        width: min(860px, calc(100vw - 24px));
+        max-height: min(82vh, 760px);
+        overflow: auto;
+        display: grid;
+        gap: 12px;
+        padding: 16px;
+        border-radius: 18px;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        color: #f7efe1;
+        background:
+          radial-gradient(circle at top right, rgba(219, 122, 48, 0.18), transparent 40%),
+          rgba(15, 20, 24, 0.97);
+      }
+
+      .al-bank-modal-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      .al-bank-modal-head h3 {
+        margin: 0;
+        font-size: 18px;
+      }
+
+      .al-bank-modal-head p {
+        margin: 6px 0 0;
+        font-size: 13px;
+        color: #d7c9b3;
+      }
+
+      .al-bank-modal-close {
+        border: 0;
+        border-radius: 999px;
+        width: 30px;
+        height: 30px;
+        font-size: 16px;
+        color: #fff3df;
+        background: rgba(255, 255, 255, 0.1);
+        cursor: pointer;
+      }
+
+      .al-bank-list {
+        display: grid;
+        gap: 10px;
+      }
+
+      .al-bank-item {
+        display: grid;
+        gap: 8px;
+        padding: 12px;
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.06);
+      }
+
+      .al-bank-item-title {
+        margin: 0;
+        font-size: 13px;
+        line-height: 1.5;
+        color: #fff3df;
+      }
+
+      .al-bank-item-meta {
+        margin: 0;
+        font-size: 12px;
+        color: #d5c4ad;
+      }
+
+      .al-bank-item-answer {
+        display: grid;
+        gap: 6px;
+      }
+
+      .al-bank-item-answer label {
+        font-size: 12px;
+        color: #ffcf9a;
+      }
+
+      .al-bank-item-answer input {
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        border-radius: 10px;
+        padding: 8px 10px;
+        font-size: 14px;
+        color: #fff6e8;
+        background: rgba(8, 14, 18, 0.72);
+      }
+
+      .al-bank-modal-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+      }
+
+      .al-bank-modal-actions button {
+        border: 0;
+        border-radius: 10px;
+        padding: 9px 14px;
+        font-size: 13px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+
+      .al-bank-modal-cancel {
+        color: #ecdcc6;
+        background: rgba(255, 255, 255, 0.1);
+      }
+
+      .al-bank-modal-save {
+        color: #20140e;
+        background: linear-gradient(135deg, #ffb56a 0%, #f08a3a 100%);
+      }
+
       @media (max-width: 720px) {
         #${LAUNCHER_ID} {
           top: auto;
@@ -1254,28 +1389,53 @@
     state.solveCancelRequested = false;
     state.currentSolveRequestId = requestId;
     renderStatusActionButton();
-    startBusyStatus("正在请求模型，请稍等...", "请求已准备好，正在发送给 AI。");
+    startBusyStatus("正在准备答案...", "先检查本地题库，再决定是否调用 AI。");
 
     try {
-      const response = await sendMessage({
-        type: "autolearning:solve-problem",
-        requestId,
-        problem: state.problem,
-        extraInstructions,
-      });
+      await ensureQuestionBankLoaded();
+      const questionBankHit = findQuestionBankAnswer(state.problem, mode);
+      const usedQuestionBank = Boolean(questionBankHit?.entry);
+      let solveResult = null;
 
-      if (!response?.ok) {
-        throw new Error(response?.error || "生成失败");
+      if (usedQuestionBank) {
+        setStatus("题库命中，正在直接使用本地答案...", {
+          busy: true,
+          hint: "已命中本地题库，本题不会调用 AI。",
+        });
+        solveResult = buildQuestionBankResult(questionBankHit.entry, state.problem);
+      } else {
+        setStatus("本地题库未命中，正在请求 AI...", {
+          busy: true,
+          hint: "已开始调用模型。",
+        });
+        const response = await sendMessage({
+          type: "autolearning:solve-problem",
+          requestId,
+          problem: state.problem,
+          extraInstructions,
+        });
+
+        if (!response?.ok) {
+          throw new Error(response?.error || "生成失败");
+        }
+        solveResult = response.result || {};
       }
 
-      state.result = response.result;
-      const choiceAnswerText = String(response.result.answer || response.result.code || "").trim();
-      renderGeneratedTitle(response.result.generatedTitle || response.result.summary || "");
-      renderCurrentClassification(response.result);
-      elements.approach.textContent =
-        response.result.approach || response.result.summary || "模型已返回代码。";
-      elements.code.value = response.result.code || "";
+      state.result = solveResult;
+      const choiceAnswerText = String(solveResult.answer || solveResult.code || "").trim();
+      renderGeneratedTitle(solveResult.generatedTitle || solveResult.summary || "");
+      renderCurrentClassification(solveResult);
+      elements.approach.textContent = solveResult.approach || solveResult.summary || "已拿到答案。";
+      elements.code.value = solveResult.code || "";
       renderChoiceAnswer(choiceAnswerText);
+
+      if (!usedQuestionBank) {
+        await upsertQuestionBankEntry(state.problem, mode, solveResult, { source: "ai" });
+      }
+      if (mode === "choice" && choiceAnswerText) {
+        queueQuestionBankReviewItem(state.problem, mode, choiceAnswerText);
+      }
+
       let autoPickResult = null;
       if (mode === "choice" && choiceAnswerText) {
         autoPickResult = await pickChoiceOptions(choiceAnswerText);
@@ -1303,17 +1463,18 @@
       }
       stopBusyStatus(
         copied
-          ? `已生成答案${autoPickSuffix}${nextQuestionSuffix}并自动复制，模型：${response.result.model}`
-          : `已生成答案${autoPickSuffix}${nextQuestionSuffix}，模型：${response.result.model}`,
-        "AI 已返回结果。",
+          ? `已生成答案${autoPickSuffix}${nextQuestionSuffix}并自动复制，来源：${usedQuestionBank ? "本地题库" : solveResult.model || "AI"}`
+          : `已生成答案${autoPickSuffix}${nextQuestionSuffix}，来源：${usedQuestionBank ? "本地题库" : solveResult.model || "AI"}`,
+        usedQuestionBank ? "答案来自本地题库。" : "AI 已返回结果。",
       );
       showToast("答案已经生成好了，点 AL 就能查看。");
       return {
         ok: true,
-        result: response.result,
+        result: solveResult,
         choiceAnswerText,
         autoPickResult,
         nextClicked,
+        source: usedQuestionBank ? "question-bank" : "ai",
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -1433,7 +1594,7 @@
         const navigationResult = await advanceToNextQuestionOrSubmit(beforeFingerprint, runToken);
         if (navigationResult.action === "submit") {
           setStatus(`第 ${state.fullAutoRound} 题已完成，已检测到最后一题并尝试点击“提交作业”。`);
-          showToast("已到最后一题，已经尝试点击提交作业。");
+          showToast("已到最后一题并提交。看完解析后，可在面板里点“编辑题库”修正答案。");
           break;
         }
         if (!navigationResult.ok && !state.fullAutoStopRequested && runToken === state.fullAutoRunToken) {
@@ -1556,22 +1717,36 @@
       return { ok: false, labels: [], error: "答案不是 A/B/C/D 或 对/错 格式。" };
     }
 
-    const items = collectChoiceItems();
-    if (items.length === 0) {
+    const initialItems = collectChoiceItems();
+    if (initialItems.length === 0) {
       return { ok: false, labels: [], error: "页面没有找到可点击的选项列表。" };
+    }
+
+    const multiChoiceMode = isMultiChoiceQuestionContext() || labels.length > 1;
+    if (multiChoiceMode) {
+      const directPicked = await pickChoiceOptionsInElementUiCheckboxGroup(labels);
+      if (directPicked.length > 0) {
+        return {
+          ok: true,
+          labels: directPicked,
+          error: "",
+        };
+      }
     }
 
     const picked = [];
     for (const label of labels) {
+      const items = collectChoiceItems();
       const item =
         items.find((candidate) => matchesChoiceItemByLabel(candidate, label)) ||
-        items.find((candidate, index) => matchesChoiceItemBySemanticFallback(candidate, label, index));
+        items.find((candidate, index) => matchesChoiceItemBySemanticFallback(candidate, label, index, items));
       if (!item) {
         const selectedMatch =
           items.find((candidate) => isChoiceItemSelected(candidate) && matchesChoiceItemByLabel(candidate, label)) ||
           items.find(
             (candidate, index) =>
-              isChoiceItemSelected(candidate) && matchesChoiceItemBySemanticFallback(candidate, label, index),
+              isChoiceItemSelected(candidate) &&
+              matchesChoiceItemBySemanticFallback(candidate, label, index, items),
           );
         if (selectedMatch) {
           picked.push(label);
@@ -1579,7 +1754,9 @@
         continue;
       }
 
-      const clicked = await clickChoiceItem(item);
+      const clicked = multiChoiceMode
+        ? await ensureChoiceItemSelected(item)
+        : await clickChoiceItem(item, labels.length > 1);
       if (clicked || isChoiceItemSelected(item)) {
         picked.push(label);
       }
@@ -1590,6 +1767,59 @@
       labels: picked,
       error: picked.length > 0 ? "" : "没有匹配到可点击的选项。",
     };
+  }
+
+  async function pickChoiceOptionsInElementUiCheckboxGroup(labels) {
+    if (!Array.isArray(labels) || labels.length === 0) {
+      return [];
+    }
+
+    const groups = Array.from(
+      document.querySelectorAll(".questionContent .el-checkbox-group.checkbox-view, .el-checkbox-group.checkbox-view"),
+    ).filter((group) => group instanceof Element && isVisible(group) && !isInsideAssistant(group));
+    if (groups.length === 0) {
+      return [];
+    }
+
+    const picked = [];
+    const group = groups[0];
+    const optionLabels = Array.from(group.querySelectorAll("label.el-checkbox"));
+    if (optionLabels.length === 0) {
+      return [];
+    }
+
+    for (const targetLabel of labels) {
+      const option = optionLabels.find((node) => getChoiceLabelFromItem(node) === targetLabel);
+      if (!option) {
+        continue;
+      }
+      const ok = await ensureChoiceItemSelected(option);
+      if (ok || isChoiceItemSelected(option)) {
+        picked.push(targetLabel);
+      }
+      await delay(70);
+    }
+
+    return picked;
+  }
+
+  function isMultiChoiceQuestionContext() {
+    const problemText = normalizeText(
+      `${state.problem?.title || ""}\n${state.problem?.statementText || ""}\n${state.problem?.ocrText || ""}`,
+    );
+    if (/(多选题|多项选择|multiple\s*choice)/i.test(problemText)) {
+      return true;
+    }
+
+    const visibleQuestionHint = normalizeText(
+      firstVisible([
+        ".questionTitle",
+        ".questionContent .questionTitle",
+        ".ques-detail .questionTitle",
+        "#task-left-panel .task-header",
+      ])?.textContent || "",
+    );
+    return /(多选题|多项选择|multiple\s*choice)/i.test(visibleQuestionHint);
   }
 
   function extractChoiceLabels(answerText) {
@@ -1619,8 +1849,8 @@
     if (!(item instanceof Element)) {
       return false;
     }
-    const letterEl = item.querySelector(".letterSort, .option-letter, label, span");
-    const text = normalizeText((letterEl ? letterEl.textContent : item.textContent) || "")
+    const explicitLetter = getChoiceLabelFromItem(item);
+    const text = normalizeText(item.textContent || "")
       .replace(/\s+/g, "")
       .toUpperCase();
     if (label === "对") {
@@ -1630,10 +1860,40 @@
       return text.includes("错") || text.includes("错误") || text.includes("FALSE");
     }
 
-    return text.startsWith(`${label}.`) || text.startsWith(label) || text.includes(`${label}.`);
+    if (explicitLetter) {
+      return explicitLetter === label;
+    }
+    return (
+      text.startsWith(`${label}.`) ||
+      text.startsWith(`${label}、`) ||
+      text.startsWith(`${label}`) ||
+      text.includes(`${label}.`) ||
+      text.includes(`${label}、`)
+    );
   }
 
-  function matchesChoiceItemBySemanticFallback(item, label, index) {
+  function getChoiceLabelFromItem(item) {
+    if (!(item instanceof Element)) {
+      return "";
+    }
+    const direct = normalizeText(
+      item.querySelector(".letterSort, .option-letter, .el-checkbox__label .letterSort, .el-radio__label .letterSort")
+        ?.textContent || "",
+    )
+      .replace(/[^A-Da-d]/g, "")
+      .toUpperCase();
+    if (/^[A-D]$/.test(direct)) {
+      return direct;
+    }
+
+    const text = normalizeText(item.textContent || "")
+      .replace(/\s+/g, "")
+      .toUpperCase();
+    const match = text.match(/^([A-D])(?:[\.、:：\)\）]|$)/);
+    return match ? match[1] : "";
+  }
+
+  function matchesChoiceItemBySemanticFallback(item, label, index, items = []) {
     if (!(item instanceof Element)) {
       return false;
     }
@@ -1663,13 +1923,35 @@
     }
 
     if (/^[A-D]$/.test(label)) {
+      // For A/B/C/D do not rely on index fallback by default.
+      // Some pages render answer cards or navigation lists that also contain numbers/labels,
+      // causing index-based fallback to click wrong targets.
+      if (!isLikelyReliableChoiceOrder(items)) {
+        return false;
+      }
       return index === label.charCodeAt(0) - 65;
     }
 
     return false;
   }
 
-  async function clickChoiceItem(item) {
+  function isLikelyReliableChoiceOrder(items) {
+    if (!Array.isArray(items) || items.length < 2 || items.length > 6) {
+      return false;
+    }
+    const directLabelCount = items.reduce((count, item) => {
+      const text = normalizeText(item?.textContent || "")
+        .replace(/\s+/g, "")
+        .toUpperCase();
+      if (/^[A-D][\.\、:：\)\）]/.test(text)) {
+        return count + 1;
+      }
+      return count;
+    }, 0);
+    return directLabelCount >= Math.max(2, Math.floor(items.length * 0.6));
+  }
+
+  async function clickChoiceItem(item, preferCheckbox = false) {
     if (!(item instanceof Element)) {
       return false;
     }
@@ -1681,22 +1963,30 @@
     let clickTriggered = false;
 
     const candidates = [
+      item.querySelector("input[type='checkbox']"),
+      item.querySelector("input[type='radio']"),
       item.querySelector(".checkIcon"),
       item.querySelector("label"),
       item.querySelector(".item-content"),
       item.querySelector(".stem"),
       item.querySelector(".preStyle"),
-      item.querySelector("input[type='checkbox']"),
-      item.querySelector("input[type='radio']"),
       item,
     ].filter(Boolean);
+
+    if (preferCheckbox) {
+      candidates.sort((a, b) => {
+        const aScore = a instanceof Element && a.matches("input[type='checkbox'], .el-checkbox, .ant-checkbox-wrapper") ? 1 : 0;
+        const bScore = b instanceof Element && b.matches("input[type='checkbox'], .el-checkbox, .ant-checkbox-wrapper") ? 1 : 0;
+        return bScore - aScore;
+      });
+    }
 
     for (const candidate of candidates) {
       if (!(candidate instanceof Element)) {
         continue;
       }
 
-      if (!simulateUserClick(candidate)) {
+      if (!simulateUserClick(candidate, { useNativeClick: true })) {
         continue;
       }
       clickTriggered = true;
@@ -1717,6 +2007,93 @@
     return false;
   }
 
+  async function ensureChoiceItemSelected(item) {
+    if (!(item instanceof Element)) {
+      return false;
+    }
+    if (isChoiceItemSelected(item)) {
+      return true;
+    }
+
+    const checkbox = item.querySelector("input[type='checkbox']");
+    if (checkbox instanceof HTMLInputElement) {
+      if (!checkbox.checked) {
+        checkbox.focus?.();
+        checkbox.checked = true;
+        checkbox.dispatchEvent(new Event("input", { bubbles: true, cancelable: true }));
+        checkbox.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
+        checkbox.click?.();
+      }
+      if (isChoiceItemSelected(item)) {
+        return true;
+      }
+    }
+
+    const radio = item.querySelector("input[type='radio']");
+    if (radio instanceof HTMLInputElement) {
+      // Some sites mislabel multi-choice as radio in DOM wrappers.
+      if (!radio.checked) {
+        radio.checked = true;
+        radio.dispatchEvent(new Event("input", { bubbles: true, cancelable: true }));
+        radio.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
+      }
+      if (isChoiceItemSelected(item)) {
+        return true;
+      }
+    }
+
+    const clickCandidates = [
+      item.querySelector(".el-checkbox__input"),
+      item.querySelector(".el-checkbox__label"),
+      item.querySelector(".el-checkbox__original"),
+      item.querySelector("label"),
+      item.querySelector(".checkIcon"),
+      item.querySelector(".el-checkbox__inner"),
+      item.querySelector(".ant-checkbox-input"),
+      item.querySelector(".ant-checkbox-wrapper"),
+      item.querySelector(".item-content"),
+      item,
+    ].filter(Boolean);
+
+    for (const candidate of clickCandidates) {
+      if (!(candidate instanceof Element)) {
+        continue;
+      }
+      if (!simulateUserClick(candidate, { useNativeClick: true })) {
+        continue;
+      }
+      await delay(90);
+      if (isChoiceItemSelected(item)) {
+        return true;
+      }
+    }
+
+    const checkboxRoot =
+      item.closest("label.el-checkbox, .el-checkbox, .checkbox-view label") ||
+      item.querySelector("label.el-checkbox, .el-checkbox");
+    if (checkboxRoot instanceof HTMLElement) {
+      checkboxRoot.click();
+      await delay(90);
+      if (isChoiceItemSelected(item)) {
+        return true;
+      }
+    }
+
+    const checkboxInputLike =
+      item.querySelector("input.el-checkbox__original") ||
+      item.querySelector("input[type='checkbox']");
+    if (checkboxInputLike instanceof HTMLInputElement) {
+      checkboxInputLike.click?.();
+      checkboxInputLike.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
+      await delay(80);
+      if (isChoiceItemSelected(item)) {
+        return true;
+      }
+    }
+
+    return isChoiceItemSelected(item);
+  }
+
   function isChoiceItemSelected(item) {
     if (!(item instanceof Element)) {
       return false;
@@ -1725,6 +2102,13 @@
     const input = item.querySelector("input[type='checkbox'], input[type='radio']");
     if (input instanceof HTMLInputElement && input.checked) {
       return true;
+    }
+
+    if (item.matches("label.el-checkbox, .el-checkbox")) {
+      const checkboxInput = item.querySelector(".el-checkbox__input");
+      if (checkboxInput instanceof Element && checkboxInput.classList.contains("is-checked")) {
+        return true;
+      }
     }
 
     const explicitSelectedMarker = item.querySelector(
@@ -1787,6 +2171,20 @@
   }
 
   function collectChoiceItems() {
+    const inputFirst = Array.from(
+      document.querySelectorAll("input[type='checkbox'], input[type='radio']"),
+    )
+      .filter((node) => node instanceof Element && isVisible(node) && !isInsideAssistant(node))
+      .map((node) => resolveChoiceItemContainer(node))
+      .filter((node) => node instanceof Element && isVisible(node) && !isInsideAssistant(node));
+    if (inputFirst.length > 0) {
+      const dedupedInput = Array.from(new Set(inputFirst));
+      const filteredInput = dedupedInput.filter((node) => looksLikeChoiceItem(node));
+      if (filteredInput.length > 0) {
+        return filteredInput;
+      }
+    }
+
     const preferred = Array.from(
       document.querySelectorAll("ul.radio-view li, ul.checkbox-view li, .radio-view li, .checkbox-view li"),
     ).filter((node) => node instanceof Element && isVisible(node) && !isInsideAssistant(node));
@@ -1827,7 +2225,13 @@
     }
 
     if (node.matches("input[type='radio'], input[type='checkbox']")) {
-      return node.closest("li, label, div, span") || node.parentElement || node;
+      return (
+        node.closest(
+          "li, label, [role='radio'], [role='checkbox'], .el-radio, .el-checkbox, .ant-radio-wrapper, .ant-checkbox-wrapper, .option-item, .answer-item",
+        ) ||
+        node.parentElement ||
+        node
+      );
     }
 
     return node.closest("li, label, [role='radio'], [role='checkbox'], .option-item, .answer-item") || node;
@@ -1859,7 +2263,7 @@
     return /[A-D][\.\、:：\)\）]/i.test(normalizedText) || /(对|错|正确|错误|TRUE|FALSE)/i.test(normalizedText);
   }
 
-  function simulateUserClick(element) {
+  function simulateUserClick(element, options = {}) {
     if (!(element instanceof Element)) {
       return false;
     }
@@ -1867,6 +2271,7 @@
     if (!(target instanceof HTMLElement)) {
       return false;
     }
+    const useNativeClick = Boolean(options.useNativeClick);
 
     for (const type of ["mouseover", "mousedown", "mouseup", "click"]) {
       target.dispatchEvent(
@@ -1877,6 +2282,9 @@
         }),
       );
     }
+    if (useNativeClick) {
+      target.click?.();
+    }
     return true;
   }
 
@@ -1885,7 +2293,18 @@
       return null;
     }
 
-    return element.closest("button, a, [role='button'], .next-topic, .reviewDone, .ZHIHUISHU_QZMD") || element;
+    const choiceTarget = element.closest(
+      "input[type='checkbox'], input[type='radio'], label, [role='checkbox'], [role='radio'], .el-radio, .el-checkbox, .ant-radio-wrapper, .ant-checkbox-wrapper, .checkIcon",
+    );
+    if (choiceTarget instanceof Element) {
+      return choiceTarget;
+    }
+
+    return (
+      element.closest(
+        ".next-topic, .reviewDone, .ZHIHUISHU_QZMD, button.next-topic, button.reviewDone, [role='button']",
+      ) || element
+    );
   }
 
   function clickNextQuestionButton() {
@@ -1893,7 +2312,7 @@
     if (!(nextButton instanceof Element) || isElementDisabledLike(nextButton)) {
       return false;
     }
-    return simulateUserClick(nextButton);
+    return simulateUserClick(nextButton, { useNativeClick: false });
   }
 
   function findNextQuestionButton() {
@@ -4453,6 +4872,621 @@
     if (elements.code) {
       elements.code.value = "";
     }
+  }
+
+  async function hydrateQuestionBank() {
+    try {
+      const items = await storageGet({
+        [QUESTION_BANK_STORAGE_KEY]: {},
+      });
+      state.questionBank = normalizeQuestionBankMap(items?.[QUESTION_BANK_STORAGE_KEY]);
+      state.questionBankLoaded = true;
+    } catch {
+      state.questionBank = {};
+      state.questionBankLoaded = true;
+    }
+  }
+
+  async function ensureQuestionBankLoaded() {
+    if (state.questionBankLoaded) {
+      return;
+    }
+    await hydrateQuestionBank();
+  }
+
+  function normalizeQuestionBankMap(raw) {
+    if (!raw || typeof raw !== "object") {
+      return {};
+    }
+
+    const normalized = {};
+    for (const [key, value] of Object.entries(raw)) {
+      if (!key || !value || typeof value !== "object") {
+        continue;
+      }
+      normalized[key] = {
+        key: String(value.key || key),
+        promptMode: value.promptMode === "choice" ? "choice" : "code",
+        title: String(value.title || ""),
+        statementPreview: String(value.statementPreview || ""),
+        answer: String(value.answer || ""),
+        code: String(value.code || ""),
+        summary: String(value.summary || ""),
+        approach: String(value.approach || ""),
+        generatedTitle: String(value.generatedTitle || ""),
+        model: String(value.model || ""),
+        source: String(value.source || ""),
+        createdAt: Number.isFinite(Number(value.createdAt)) ? Number(value.createdAt) : Date.now(),
+        updatedAt: Number.isFinite(Number(value.updatedAt)) ? Number(value.updatedAt) : Date.now(),
+      };
+    }
+    return normalized;
+  }
+
+  function buildQuestionBankLookupKeys(problem, mode = "choice") {
+    const promptMode = mode === "choice" ? "choice" : "code";
+    const title = normalizeQuestionStem(problem?.title || "");
+    const statement = extractQuestionCoreText(problem);
+    const ocr = normalizeQuestionStem(problem?.ocrText || "");
+    const sampleText = Array.isArray(problem?.samples)
+      ? problem.samples
+          .map((sample) => {
+            const input = normalizeQuestionStem(sample?.input || "");
+            const output = normalizeQuestionStem(sample?.output || "");
+            return `${input}=>${output}`;
+          })
+          .join(" | ")
+      : "";
+    const core = statement || ocr || title;
+    const primaryRaw = `${promptMode}\n${core}`;
+    const secondaryRaw = `${promptMode}\n${title}\n${core}`;
+    const tertiaryRaw = `${promptMode}\n${core}\n${sampleText}`;
+    const keys = [
+      `${promptMode}:${hashText(primaryRaw)}`,
+      `${promptMode}:${hashText(secondaryRaw)}`,
+      `${promptMode}:${hashText(tertiaryRaw)}`,
+    ];
+    return Array.from(new Set(keys.filter(Boolean)));
+  }
+
+  function findQuestionBankAnswer(problem, mode = "choice") {
+    const keys = buildQuestionBankLookupKeys(problem, mode);
+    for (const key of keys) {
+      const entry = state.questionBank[key];
+      if (!entry) {
+        continue;
+      }
+      const candidate = mode === "choice" ? String(entry.answer || entry.code || "").trim() : String(entry.code || "").trim();
+      if (!candidate) {
+        continue;
+      }
+      return {
+        key,
+        keys,
+        entry,
+      };
+    }
+    if (mode === "choice") {
+      const targetStem = extractQuestionCoreText(problem);
+      if (targetStem) {
+        for (const [bankKey, entry] of Object.entries(state.questionBank || {})) {
+          if (!entry || entry.promptMode !== "choice") {
+            continue;
+          }
+          const candidate = String(entry.answer || entry.code || "").trim();
+          if (!candidate) {
+            continue;
+          }
+          const candidateStem = normalizeQuestionStem(entry.statementPreview || entry.title || "");
+          if (!candidateStem) {
+            continue;
+          }
+          if (
+            candidateStem === targetStem ||
+            candidateStem.includes(targetStem) ||
+            targetStem.includes(candidateStem)
+          ) {
+            return {
+              key: bankKey,
+              keys,
+              entry,
+            };
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  function extractQuestionCoreText(problem) {
+    const raw = normalizeText(problem?.statementText || problem?.ocrText || "");
+    if (!raw) {
+      return "";
+    }
+
+    const lines = raw
+      .split("\n")
+      .map((line) => normalizeText(line))
+      .filter(Boolean);
+    const filtered = [];
+
+    for (const rawLine of lines) {
+      let line = stripQuestionOrderPrefix(rawLine);
+      if (!line) {
+        continue;
+      }
+      line = line.replace(/^(单选题|多选题|判断题|填空题|选择题|题目)\s*/g, "");
+      line = line.replace(/^第\s*\d+\s*题\s*/g, "");
+      if (!line) {
+        continue;
+      }
+      if (isChoiceOptionLine(line)) {
+        continue;
+      }
+      filtered.push(line);
+      if (filtered.length >= 4) {
+        break;
+      }
+    }
+
+    const joined = filtered.join(" ");
+    return normalizeQuestionStem(joined);
+  }
+
+  function stripQuestionOrderPrefix(value) {
+    let line = String(value || "");
+    line = line.replace(/^\s*[\[(（【]?\s*\d+\s*[\])）】]?\s*[\.、。．:：-]\s*/g, "");
+    line = line.replace(/^\s*\d+\s+/g, "");
+    line = line.replace(/^\s*(\d+\s*[\.、。．:：-]\s*)+/g, "");
+    return normalizeText(line);
+  }
+
+  function isChoiceOptionLine(value) {
+    const line = String(value || "");
+    if (!line) {
+      return false;
+    }
+
+    if (/^[A-FＡ-Ｆ][\.、。．:：\s]/.test(line)) {
+      return true;
+    }
+    if (/^[\(\[（【]?[A-FＡ-Ｆ][\)\]）】][\.、。．:：\s]*/.test(line)) {
+      return true;
+    }
+    if (/[A-FＡ-Ｆ][\.、。．:：].{0,80}[A-FＡ-Ｆ][\.、。．:：]/.test(line)) {
+      return true;
+    }
+    return false;
+  }
+
+  function normalizeQuestionStem(value) {
+    return normalizeText(value)
+      .toLowerCase()
+      .replace(/[“”"']/g, "")
+      .replace(/[（）()【】\[\]《》<>]/g, " ")
+      .replace(/[，,。！？!?:：;；、]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function buildQuestionBankResult(entry, problem) {
+    const answer = String(entry?.answer || "").trim();
+    const code = String(entry?.code || "").trim();
+    return {
+      generatedTitle: entry?.generatedTitle || problem?.title || "本地题库答案",
+      summary: entry?.summary || "命中本地题库答案。",
+      problemType: entry?.promptMode === "choice" ? "选择题" : "代码题",
+      problemDefinition: "",
+      approach: entry?.approach || "已命中本地题库记录，优先使用本地答案。",
+      answer,
+      code: code || (entry?.promptMode === "choice" ? answer : ""),
+      model: "local-question-bank",
+      fromQuestionBank: true,
+    };
+  }
+
+  async function upsertQuestionBankEntry(problem, mode, solveResult, options = {}) {
+    if (!problem || !solveResult) {
+      return;
+    }
+
+    const keys = buildQuestionBankLookupKeys(problem, mode);
+    if (keys.length === 0) {
+      return;
+    }
+
+    const now = Date.now();
+    const firstKey = keys[0];
+    const existing = state.questionBank[firstKey] || state.questionBank[keys[1]] || null;
+    const normalizedAnswer =
+      mode === "choice"
+        ? normalizeChoiceAnswerForBank(solveResult.answer || solveResult.code || "")
+        : "";
+    const nextEntry = {
+      key: firstKey,
+      promptMode: mode === "choice" ? "choice" : "code",
+      title: String(problem.title || "").slice(0, 300),
+      statementPreview: normalizeText(problem.statementText || "").slice(0, 1600),
+      answer: normalizedAnswer,
+      code: mode === "choice" ? normalizedAnswer : String(solveResult.code || ""),
+      summary: String(solveResult.summary || ""),
+      approach: String(solveResult.approach || ""),
+      generatedTitle: String(solveResult.generatedTitle || ""),
+      model: String(solveResult.model || ""),
+      source: String(options.source || "ai"),
+      createdAt: existing?.createdAt || now,
+      updatedAt: now,
+    };
+
+    for (const key of keys) {
+      state.questionBank[key] = {
+        ...nextEntry,
+        key,
+      };
+    }
+    await persistQuestionBank();
+  }
+
+  function queueQuestionBankReviewItem(problem, mode, answerText) {
+    if (mode !== "choice" || !problem) {
+      return;
+    }
+    const answer = normalizeChoiceAnswerForBank(answerText);
+    if (!answer) {
+      return;
+    }
+
+    const keys = buildQuestionBankLookupKeys(problem, mode);
+    if (keys.length === 0) {
+      return;
+    }
+
+    const primaryKey = keys[0];
+    const existingIndex = state.questionBankReviewQueue.findIndex((item) => item.primaryKey === primaryKey);
+    const nextItem = {
+      primaryKey,
+      keys,
+      mode: "choice",
+      title: String(problem.title || "未命名题目"),
+      statementPreview: normalizeText(problem.statementText || "").slice(0, 240),
+      answer,
+    };
+    if (existingIndex >= 0) {
+      state.questionBankReviewQueue[existingIndex] = nextItem;
+      return;
+    }
+    state.questionBankReviewQueue.push(nextItem);
+  }
+
+  async function persistQuestionBank() {
+    await storageSet({
+      [QUESTION_BANK_STORAGE_KEY]: state.questionBank,
+    });
+  }
+
+  function normalizeChoiceAnswerForBank(value) {
+    const raw = String(value || "").trim();
+    if (!raw) {
+      return "";
+    }
+
+    if (/^(对|正确|true|yes|√)$/i.test(raw)) {
+      return "对";
+    }
+    if (/^(错|错误|false|no|×)$/i.test(raw)) {
+      return "错";
+    }
+
+    const letters = raw.toUpperCase().match(/[A-F]/g) || [];
+    if (letters.length > 0) {
+      const deduped = [];
+      for (const label of letters) {
+        if (!deduped.includes(label)) {
+          deduped.push(label);
+        }
+      }
+      return deduped.join("");
+    }
+
+    return raw.slice(0, 24);
+  }
+
+  async function handleOpenQuestionBankEditor() {
+    await ensureQuestionBankLoaded();
+    const items = buildQuestionBankEditorItems();
+    if (items.length === 0) {
+      setStatus("题库里还没有可编辑的选择题记录。");
+      return;
+    }
+    openQuestionBankReviewModal(items);
+  }
+
+  function buildQuestionBankEditorItems() {
+    const map = new Map();
+
+    const upsertItem = (key, payload) => {
+      const current = map.get(key);
+      if (!current) {
+        map.set(key, {
+          id: key,
+          title: payload.title || "未命名题目",
+          statementPreview: payload.statementPreview || "",
+          answer: payload.answer || "",
+          keys: Array.from(new Set(payload.keys || [])),
+          updatedAt: Number.isFinite(Number(payload.updatedAt)) ? Number(payload.updatedAt) : 0,
+          preferred: Boolean(payload.preferred),
+        });
+        return;
+      }
+
+      current.keys = Array.from(new Set([...current.keys, ...(payload.keys || [])]));
+      if (payload.answer) {
+        current.answer = payload.answer;
+      }
+      if (payload.statementPreview && !current.statementPreview) {
+        current.statementPreview = payload.statementPreview;
+      }
+      if (payload.title && current.title === "未命名题目") {
+        current.title = payload.title;
+      }
+      current.updatedAt = Math.max(current.updatedAt, Number(payload.updatedAt) || 0);
+      if (payload.preferred) {
+        current.preferred = true;
+      }
+    };
+
+    const allEntries = Object.entries(state.questionBank || {});
+    for (const [storageKey, entry] of allEntries) {
+      if (!entry || entry.promptMode !== "choice") {
+        continue;
+      }
+      const answer = normalizeChoiceAnswerForBank(entry.answer || entry.code || "");
+      if (!answer) {
+        continue;
+      }
+      const dedupeKey = hashText(
+        `bank:${normalizeText(entry.title || "").toLowerCase()}\n${normalizeText(
+          entry.statementPreview || "",
+        ).toLowerCase()}`,
+      );
+      upsertItem(`bank:${dedupeKey}`, {
+        title: String(entry.title || "未命名题目"),
+        statementPreview: String(entry.statementPreview || ""),
+        answer,
+        keys: [storageKey],
+        updatedAt: entry.updatedAt,
+        preferred: false,
+      });
+    }
+
+    for (const queueItem of state.questionBankReviewQueue || []) {
+      const dedupeKey = hashText(
+        `queue:${normalizeText(queueItem.title || "").toLowerCase()}\n${normalizeText(
+          queueItem.statementPreview || "",
+        ).toLowerCase()}`,
+      );
+      upsertItem(`queue:${dedupeKey}`, {
+        title: String(queueItem.title || "未命名题目"),
+        statementPreview: String(queueItem.statementPreview || ""),
+        answer: normalizeChoiceAnswerForBank(queueItem.answer || ""),
+        keys: Array.isArray(queueItem.keys) ? queueItem.keys : [],
+        updatedAt: Date.now(),
+        preferred: true,
+      });
+    }
+
+    return Array.from(map.values()).sort((a, b) => {
+      if (a.preferred !== b.preferred) {
+        return a.preferred ? -1 : 1;
+      }
+      return (b.updatedAt || 0) - (a.updatedAt || 0);
+    });
+  }
+
+  function openQuestionBankReviewModal(items) {
+    if (state.reviewModalOpen) {
+      return;
+    }
+    if (!Array.isArray(items) || items.length === 0) {
+      return;
+    }
+
+    state.reviewModalOpen = true;
+    const modal = document.createElement("div");
+    modal.className = "al-bank-modal";
+    modal.setAttribute("data-role", "question-bank-modal");
+    modal.innerHTML = `
+      <div class="al-bank-modal-card" role="dialog" aria-modal="true" aria-label="题库更正">
+        <div class="al-bank-modal-head">
+          <div>
+            <h3>编辑本地题库答案</h3>
+            <p>看完解析后，可在这里修改答案并保存到本地题库。当前列表会优先展示你本轮刚做过的题。</p>
+          </div>
+          <button type="button" class="al-bank-modal-close" data-role="bank-close" aria-label="关闭">×</button>
+        </div>
+        <div class="al-bank-list">
+          ${items
+            .map((item, index) => {
+              return `
+                <article class="al-bank-item">
+                  <p class="al-bank-item-title">${index + 1}. ${escapeHtml(item.title)}</p>
+                  <p class="al-bank-item-meta">${escapeHtml(item.statementPreview || "题面预览为空。")}</p>
+                  <div class="al-bank-item-answer">
+                    <label>答案</label>
+                    <input type="text" data-role="bank-answer-input" data-index="${index}" value="${escapeHtml(item.answer)}" placeholder="例如 A / AC / 对 / 错" />
+                  </div>
+                </article>
+              `;
+            })
+            .join("")}
+        </div>
+        <div class="al-bank-modal-actions">
+          <button type="button" class="al-bank-modal-cancel" data-role="bank-cancel">关闭</button>
+          <button type="button" class="al-bank-modal-save" data-role="bank-save">手动保存（可选）</button>
+        </div>
+      </div>
+    `;
+
+    const closeModal = () => {
+      modal.remove();
+      state.reviewModalOpen = false;
+    };
+
+    const autoSaveTimers = new Map();
+
+    const applySingleUpdate = (editorItem, normalizedAnswer) => {
+      if (!normalizedAnswer || !Array.isArray(editorItem.keys) || editorItem.keys.length === 0) {
+        return false;
+      }
+
+      let changed = false;
+      const now = Date.now();
+
+      for (const aliasKey of editorItem.keys) {
+        const existing = state.questionBank[aliasKey];
+        const previousAnswer = normalizeChoiceAnswerForBank(existing?.answer || existing?.code || "");
+        if (previousAnswer === normalizedAnswer) {
+          continue;
+        }
+        state.questionBank[aliasKey] = {
+          key: aliasKey,
+          promptMode: "choice",
+          title: editorItem.title || existing?.title || "",
+          statementPreview: editorItem.statementPreview || existing?.statementPreview || "",
+          answer: normalizedAnswer,
+          code: normalizedAnswer,
+          summary: existing?.summary || "",
+          approach: existing?.approach || "",
+          generatedTitle: existing?.generatedTitle || "",
+          model: existing?.model || "",
+          source: "manual-review",
+          createdAt: existing?.createdAt || now,
+          updatedAt: now,
+        };
+        changed = true;
+      }
+
+      for (const queueItem of state.questionBankReviewQueue || []) {
+        const intersects = queueItem.keys?.some((key) => editorItem.keys.includes(key));
+        if (intersects) {
+          queueItem.answer = normalizedAnswer;
+        }
+      }
+
+      if (changed) {
+        editorItem.answer = normalizedAnswer;
+      }
+      return changed;
+    };
+
+    const saveInputValue = async (input, options = {}) => {
+      if (!(input instanceof HTMLInputElement)) {
+        return false;
+      }
+      const index = Number(input.dataset.index);
+      if (!Number.isInteger(index) || index < 0 || index >= items.length) {
+        return false;
+      }
+      const editorItem = items[index];
+      const normalizedAnswer = normalizeChoiceAnswerForBank(input.value);
+      if (!normalizedAnswer) {
+        return false;
+      }
+      input.value = normalizedAnswer;
+
+      const changed = applySingleUpdate(editorItem, normalizedAnswer);
+      if (!changed) {
+        return false;
+      }
+      await persistQuestionBank();
+      if (!options.silent) {
+        setStatus(`已自动保存：${editorItem.title}`);
+      }
+      return true;
+    };
+
+    const flushAutoSaveTimer = async (input) => {
+      const index = Number(input?.dataset?.index);
+      if (!Number.isInteger(index)) {
+        return;
+      }
+      const timer = autoSaveTimers.get(index);
+      if (timer) {
+        window.clearTimeout(timer);
+        autoSaveTimers.delete(index);
+      }
+      await saveInputValue(input, { silent: false });
+    };
+
+    const scheduleAutoSave = (input) => {
+      const index = Number(input?.dataset?.index);
+      if (!Number.isInteger(index)) {
+        return;
+      }
+      const oldTimer = autoSaveTimers.get(index);
+      if (oldTimer) {
+        window.clearTimeout(oldTimer);
+      }
+      const timer = window.setTimeout(() => {
+        autoSaveTimers.delete(index);
+        void saveInputValue(input, { silent: false });
+      }, 280);
+      autoSaveTimers.set(index, timer);
+    };
+
+    const onSave = async () => {
+      const answerInputs = Array.from(modal.querySelectorAll("input[data-role='bank-answer-input']"));
+      let updatedCount = 0;
+
+      for (const input of answerInputs) {
+        const changed = await saveInputValue(input, { silent: true });
+        if (changed) {
+          updatedCount += 1;
+        }
+      }
+
+      if (updatedCount > 0) {
+        setStatus(`题库更正已保存，共更新 ${updatedCount} 条记录。`);
+        showToast("题库更正已保存。");
+      } else {
+        setStatus("当前内容已经是最新，已自动保存。");
+      }
+    };
+
+    const answerInputs = Array.from(modal.querySelectorAll("input[data-role='bank-answer-input']"));
+    for (const input of answerInputs) {
+      if (!(input instanceof HTMLInputElement)) {
+        continue;
+      }
+      input.addEventListener("input", () => {
+        scheduleAutoSave(input);
+      });
+      input.addEventListener("blur", () => {
+        void flushAutoSaveTimer(input);
+      });
+      input.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          void flushAutoSaveTimer(input);
+          input.blur();
+        }
+      });
+    }
+
+    modal.addEventListener("click", (event) => {
+      const target = event.target;
+      if (!(target instanceof Element)) {
+        return;
+      }
+      if (target.getAttribute("data-role") === "bank-close" || target.getAttribute("data-role") === "bank-cancel") {
+        closeModal();
+      }
+      if (target.getAttribute("data-role") === "bank-save") {
+        void onSave();
+      }
+    });
+
+    document.documentElement.appendChild(modal);
   }
 
   function delay(ms) {
