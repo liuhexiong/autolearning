@@ -30,6 +30,8 @@
         response = { ok: true, debug: await collectEditorDebug() };
       } else if (type === "setEditorValue") {
         response = { ok: setEditorValue(String(payload.code || "")) };
+      } else if (type === "selectChoiceOptions") {
+        response = await selectChoiceOptions(payload.labels || []);
       } else if (type === "submitSolution") {
         response = await clickSubmitButton();
       } else {
@@ -138,6 +140,165 @@
       ok: true,
       label: normalizeText(button.innerText || button.textContent || "提交"),
     };
+  }
+
+  async function selectChoiceOptions(labels) {
+    const normalizedLabels = Array.from(
+      new Set(
+        (Array.isArray(labels) ? labels : [])
+          .map((label) => String(label || "").trim().toUpperCase())
+          .filter((label) => /^(A|B|C|D|对|错)$/.test(label)),
+      ),
+    );
+    if (normalizedLabels.length === 0) {
+      return { ok: false, labels: [], error: "没有有效选项标签。" };
+    }
+
+    const checkboxGroups = Array.from(document.querySelectorAll(".el-checkbox-group.checkbox-view")).filter(
+      (node) => node instanceof Element && isVisible(node) && !isInsideAssistant(node),
+    );
+
+    if (checkboxGroups.length > 0) {
+      const picked = await selectElementUiCheckboxGroup(checkboxGroups[0], normalizedLabels);
+      return {
+        ok: picked.length > 0,
+        labels: picked,
+        error: picked.length > 0 ? "" : "页面上下文里也没有成功勾选多选项。",
+      };
+    }
+
+    return { ok: false, labels: [], error: "页面里没有找到可见的多选框分组。" };
+  }
+
+  async function selectElementUiCheckboxGroup(group, labels) {
+    if (!(group instanceof Element)) {
+      return [];
+    }
+
+    const optionLabels = Array.from(group.querySelectorAll("label.el-checkbox"));
+    if (optionLabels.length === 0) {
+      return [];
+    }
+
+    const picked = [];
+    for (const targetLabel of labels) {
+      const option = optionLabels.find((node) => getChoiceLabelFromElementUiNode(node) === targetLabel);
+      if (!(option instanceof Element)) {
+        continue;
+      }
+      if (!isElementUiCheckboxSelected(option)) {
+        await bruteForceElementUiCheckbox(option);
+      }
+      if (isElementUiCheckboxSelected(option)) {
+        picked.push(targetLabel);
+      }
+      await delay(120);
+    }
+
+    return picked;
+  }
+
+  async function bruteForceElementUiCheckbox(option) {
+    if (!(option instanceof Element)) {
+      return false;
+    }
+
+    const targets = [
+      option.querySelector(".el-checkbox__inner"),
+      option.querySelector(".el-checkbox__input"),
+      option.querySelector(".el-checkbox__label"),
+      option,
+      option.querySelector("input.el-checkbox__original"),
+    ].filter(Boolean);
+
+    for (const target of targets) {
+      if (!(target instanceof Element)) {
+        continue;
+      }
+      dispatchDirectClick(target);
+      await delay(90);
+      if (isElementUiCheckboxSelected(option)) {
+        return true;
+      }
+    }
+
+    const input = option.querySelector("input.el-checkbox__original");
+    if (input instanceof HTMLInputElement && !input.checked) {
+      input.checked = true;
+      input.dispatchEvent(new Event("input", { bubbles: true, cancelable: true }));
+      input.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
+      await delay(90);
+    }
+
+    return isElementUiCheckboxSelected(option);
+  }
+
+  function dispatchDirectClick(target) {
+    if (!(target instanceof HTMLElement)) {
+      return false;
+    }
+
+    target.scrollIntoView?.({ block: "center", inline: "center", behavior: "auto" });
+    const rect = target.getBoundingClientRect();
+    const clientX = rect.left + Math.max(1, rect.width / 2 || 1);
+    const clientY = rect.top + Math.max(1, rect.height / 2 || 1);
+    const mouseInit = {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      view: window,
+      clientX,
+      clientY,
+      button: 0,
+    };
+
+    if (typeof PointerEvent === "function") {
+      for (const type of ["pointerdown", "pointerup"]) {
+        target.dispatchEvent(
+          new PointerEvent(type, {
+            ...mouseInit,
+            pointerId: 1,
+            pointerType: "mouse",
+            isPrimary: true,
+          }),
+        );
+      }
+    }
+
+    for (const type of ["mousedown", "mouseup", "click"]) {
+      target.dispatchEvent(new MouseEvent(type, mouseInit));
+    }
+    target.click?.();
+    return true;
+  }
+
+  function isElementUiCheckboxSelected(option) {
+    if (!(option instanceof Element)) {
+      return false;
+    }
+    const inputWrap = option.querySelector(".el-checkbox__input");
+    return inputWrap instanceof Element
+      ? inputWrap.classList.contains("is-checked")
+      : false;
+  }
+
+  function getChoiceLabelFromElementUiNode(option) {
+    if (!(option instanceof Element)) {
+      return "";
+    }
+
+    const direct = normalizeText(
+      option.querySelector(".letterSort, .el-checkbox__label .letterSort")?.textContent || "",
+    )
+      .replace(/[^A-Da-d]/g, "")
+      .toUpperCase();
+    if (/^[A-D]$/.test(direct)) {
+      return direct;
+    }
+
+    const text = normalizeText(option.textContent || "").replace(/\s+/g, "").toUpperCase();
+    const match = text.match(/^([A-D])(?:[\.、:：\)\）]|$)/);
+    return match ? match[1] : "";
   }
 
   function findSubmitButton() {
@@ -704,6 +865,14 @@
     return host instanceof HTMLElement ? host.contains(node) : false;
   }
 
+  function isVisible(node) {
+    if (!(node instanceof Element)) {
+      return false;
+    }
+    const rect = node.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+
   function readVisibleCodeDom() {
     const monacoLines = Array.from(
       document.querySelectorAll(".monaco-editor .view-line"),
@@ -728,5 +897,9 @@
 
   function normalizeCode(value) {
     return String(value || "").replace(/\u00a0/g, " ").replace(/\r\n/g, "\n");
+  }
+
+  function normalizeText(value) {
+    return String(value || "").replace(/\s+/g, " ").trim();
   }
 })();

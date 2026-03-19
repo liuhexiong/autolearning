@@ -22,6 +22,7 @@ const DEFAULT_SETTINGS = {
   autoSolveAfterCapture: true,
   screenshotShortcut: "Alt+Shift+S",
   fullPageScreenshotShortcut: "Alt+Shift+F",
+  fullAutoShortcut: "Alt+Shift+A",
   autoSubmitAfterFullCapture: false,
   fullAutoNextDelayMs: 1500,
   autoPickNextDelayMs: 600,
@@ -65,6 +66,9 @@ form.addEventListener("submit", async (event) => {
     fullPageScreenshotShortcut:
       normalizeShortcut(document.getElementById("fullPageScreenshotShortcut").value) ||
       DEFAULT_SETTINGS.fullPageScreenshotShortcut,
+    fullAutoShortcut:
+      normalizeShortcut(document.getElementById("fullAutoShortcut").value) ||
+      DEFAULT_SETTINGS.fullAutoShortcut,
     autoSubmitAfterFullCapture: document.getElementById("autoSubmitAfterFullCapture").checked,
     fullAutoNextDelayMs: normalizeDelayInput(document.getElementById("fullAutoNextDelayMs").value),
     autoPickNextDelayMs: normalizeAutoPickDelayInput(document.getElementById("autoPickNextDelayMs").value),
@@ -127,6 +131,8 @@ async function hydrateForm() {
   document.getElementById("fullPageScreenshotShortcut").value =
     normalizeShortcut(values.fullPageScreenshotShortcut) ||
     DEFAULT_SETTINGS.fullPageScreenshotShortcut;
+  document.getElementById("fullAutoShortcut").value =
+    normalizeShortcut(values.fullAutoShortcut) || DEFAULT_SETTINGS.fullAutoShortcut;
   document.getElementById("autoSubmitAfterFullCapture").checked = Boolean(
     values.autoSubmitAfterFullCapture,
   );

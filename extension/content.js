@@ -1,5 +1,10 @@
 (function () {
-  if (window.top !== window || window.__AUTOLEARNING_CONTENT__) {
+  if (window.top !== window) {
+    installFrameShortcutRelay();
+    return;
+  }
+
+  if (window.__AUTOLEARNING_CONTENT__) {
     return;
   }
 
@@ -58,6 +63,7 @@
     solveCancelRequested: false,
     promptPreview: null,
     screenshotShortcutInstalled: false,
+    frameShortcutBridgeInstalled: false,
     fixedCaptureRegion: null,
     questionBank: {},
     questionBankLoaded: false,
@@ -71,6 +77,7 @@
       autoSolveAfterCapture: true,
       screenshotShortcut: "Alt+Shift+S",
       fullPageScreenshotShortcut: "Alt+Shift+F",
+      fullAutoShortcut: "Alt+Shift+A",
       autoSubmitAfterFullCapture: false,
       fullAutoNextDelayMs: 1500,
       autoPickNextDelayMs: 600,
@@ -93,6 +100,7 @@
     mountUi();
     installAutoClipboardSync();
     installScreenshotShortcut();
+    installFrameShortcutBridge();
     void hydrateFixedCaptureRegion();
     void hydrateQuestionBank();
     renderSummary("插件已在当前页面就绪。你可以直接截图、读剪贴板，或先识别当前页面内容。");
@@ -1159,6 +1167,51 @@
         color: #d7c9b3;
       }
 
+      .al-bank-modal-tools {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+
+      .al-bank-modal-tool-buttons {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      .al-bank-modal-tool-buttons button {
+        border: 0;
+        border-radius: 10px;
+        padding: 8px 12px;
+        font-size: 12px;
+        font-weight: 700;
+        color: #fff3df;
+        background: rgba(255, 255, 255, 0.1);
+        cursor: pointer;
+      }
+
+      .al-bank-save-indicator {
+        min-height: 20px;
+        padding: 3px 10px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 700;
+        color: #f6ead7;
+        background: rgba(255, 255, 255, 0.08);
+      }
+
+      .al-bank-save-indicator[data-state="saving"] {
+        color: #20140e;
+        background: linear-gradient(135deg, #ffb56a 0%, #f08a3a 100%);
+      }
+
+      .al-bank-save-indicator[data-state="saved"] {
+        color: #fff4e8;
+        background: rgba(83, 186, 122, 0.2);
+      }
+
       .al-bank-modal-close {
         border: 0;
         border-radius: 999px;
@@ -1452,6 +1505,9 @@
         autoPickResult?.ok && autoPickResult.labels.length > 0
           ? `，并自动选择 ${autoPickResult.labels.join("/")}`
           : "";
+      const manualPickSuffix = autoPickResult?.manualRequired
+        ? "，检测到多选题，当前不会自动勾选"
+        : "";
       let nextQuestionSuffix = "";
       let nextClicked = false;
       if (auto && autoNavigate && mode === "choice" && autoPickResult?.ok) {
@@ -1463,11 +1519,19 @@
       }
       stopBusyStatus(
         copied
-          ? `已生成答案${autoPickSuffix}${nextQuestionSuffix}并自动复制，来源：${usedQuestionBank ? "本地题库" : solveResult.model || "AI"}`
-          : `已生成答案${autoPickSuffix}${nextQuestionSuffix}，来源：${usedQuestionBank ? "本地题库" : solveResult.model || "AI"}`,
-        usedQuestionBank ? "答案来自本地题库。" : "AI 已返回结果。",
+          ? `已生成答案${autoPickSuffix}${manualPickSuffix}${nextQuestionSuffix}并自动复制，来源：${usedQuestionBank ? "本地题库" : solveResult.model || "AI"}`
+          : `已生成答案${autoPickSuffix}${manualPickSuffix}${nextQuestionSuffix}，来源：${usedQuestionBank ? "本地题库" : solveResult.model || "AI"}`,
+        autoPickResult?.manualRequired
+          ? "多选题请先随机作答并提交，看完解析后到“编辑题库”里修正答案；之后仍需手动勾选选项。"
+          : usedQuestionBank
+            ? "答案来自本地题库。"
+            : "AI 已返回结果。",
       );
-      showToast("答案已经生成好了，点 AL 就能查看。");
+      showToast(
+        autoPickResult?.manualRequired
+          ? `这是多选题：先随机作答并提交，再到“编辑题库”修正答案；之后也需要按答案 ${choiceAnswerText} 手动勾选。`
+          : "答案已经生成好了，点 AL 就能查看。",
+      );
       return {
         ok: true,
         result: solveResult,
@@ -1576,6 +1640,11 @@
         }
 
         const choiceAnswerText = String(solveResult.choiceAnswerText || "").trim();
+        if (solveResult.autoPickResult?.manualRequired) {
+          throw new Error(
+            `第 ${state.fullAutoRound} 题是多选题。请先随机作答并提交，看完解析后到“编辑题库”修正答案；之后仍需按答案 ${choiceAnswerText} 手动勾选。`,
+          );
+        }
         if (!solveResult.autoPickResult?.ok) {
           // Some pages do not expose stable "selected" DOM states. In full-auto mode,
           // prioritize continuity: if we already have an answer, keep going.
@@ -1724,14 +1793,12 @@
 
     const multiChoiceMode = isMultiChoiceQuestionContext() || labels.length > 1;
     if (multiChoiceMode) {
-      const directPicked = await pickChoiceOptionsInElementUiCheckboxGroup(labels);
-      if (directPicked.length > 0) {
-        return {
-          ok: true,
-          labels: directPicked,
-          error: "",
-        };
-      }
+      return {
+        ok: false,
+        labels,
+        error: "检测到多选题，暂不支持自动勾选，请按最终答案手动选择。",
+        manualRequired: true,
+      };
     }
 
     const picked = [];
@@ -1793,14 +1860,57 @@
       if (!option) {
         continue;
       }
-      const ok = await ensureChoiceItemSelected(option);
+      const ok = await ensureElementUiCheckboxLabelSelected(option);
       if (ok || isChoiceItemSelected(option)) {
         picked.push(targetLabel);
       }
-      await delay(70);
+      await delay(120);
     }
 
     return picked;
+  }
+
+  async function ensureElementUiCheckboxLabelSelected(option) {
+    if (!(option instanceof Element)) {
+      return false;
+    }
+    if (isChoiceItemSelected(option)) {
+      return true;
+    }
+
+    const clickTargets = [
+      option.querySelector(".el-checkbox__inner"),
+      option.querySelector(".el-checkbox__input"),
+      option.querySelector(".el-checkbox__label"),
+      option,
+    ].filter(Boolean);
+
+    for (const target of clickTargets) {
+      if (!(target instanceof Element)) {
+        continue;
+      }
+      if (!simulateDirectUserClick(target, { useNativeClick: true })) {
+        continue;
+      }
+      if (await waitForChoiceItemSelected(option, 240)) {
+        return true;
+      }
+    }
+
+    const input = option.querySelector("input.el-checkbox__original");
+    if (input instanceof HTMLInputElement && !input.checked) {
+      input.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+      input.focus?.();
+      simulateDirectUserClick(input, { useNativeClick: true });
+      input.click?.();
+      input.dispatchEvent(new Event("input", { bubbles: true, cancelable: true }));
+      input.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
+      if (await waitForChoiceItemSelected(option, 240)) {
+        return true;
+      }
+    }
+
+    return isChoiceItemSelected(option);
   }
 
   function isMultiChoiceQuestionContext() {
@@ -2015,14 +2125,24 @@
       return true;
     }
 
+    if (isElementUiCheckboxItem(item)) {
+      return ensureElementUiCheckboxLabelSelected(resolveElementUiCheckboxLabel(item) || item);
+    }
+
     const checkbox = item.querySelector("input[type='checkbox']");
     if (checkbox instanceof HTMLInputElement) {
+      if (!checkbox.checked) {
+        // Use click-first for frameworks that rely on native pointer/click event chains.
+        // Avoid "checked=true + click()" because it may toggle back to unchecked.
+        simulateUserClick(checkbox, { useNativeClick: true });
+        await delay(70);
+      }
       if (!checkbox.checked) {
         checkbox.focus?.();
         checkbox.checked = true;
         checkbox.dispatchEvent(new Event("input", { bubbles: true, cancelable: true }));
         checkbox.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
-        checkbox.click?.();
+        await delay(60);
       }
       if (isChoiceItemSelected(item)) {
         return true;
@@ -2094,9 +2214,31 @@
     return isChoiceItemSelected(item);
   }
 
+  async function waitForChoiceItemSelected(item, timeoutMs = 200) {
+    const start = Date.now();
+    while (Date.now() - start <= timeoutMs) {
+      if (isChoiceItemSelected(item)) {
+        return true;
+      }
+      await delay(30);
+    }
+    return isChoiceItemSelected(item);
+  }
+
   function isChoiceItemSelected(item) {
     if (!(item instanceof Element)) {
       return false;
+    }
+
+    if (isElementUiCheckboxItem(item)) {
+      const label = resolveElementUiCheckboxLabel(item);
+      const checkboxInput =
+        label?.querySelector(".el-checkbox__input") || item.querySelector(".el-checkbox__input");
+      if (checkboxInput instanceof Element && checkboxInput.classList.contains("is-checked")) {
+        return true;
+      }
+      const ariaChecked = String(label?.getAttribute("aria-checked") || item.getAttribute("aria-checked") || "").toLowerCase();
+      return ariaChecked === "true";
     }
 
     const input = item.querySelector("input[type='checkbox'], input[type='radio']");
@@ -2149,6 +2291,27 @@
       const style = window.getComputedStyle(node);
       return /(56, 107, 255|64, 117, 255|82, 102, 255)/.test(style.backgroundColor || "");
     });
+  }
+
+  function isElementUiCheckboxItem(item) {
+    if (!(item instanceof Element)) {
+      return false;
+    }
+    return Boolean(
+      item.matches("label.el-checkbox, .el-checkbox") ||
+        item.closest("label.el-checkbox, .el-checkbox") ||
+        item.querySelector(".el-checkbox__input, input.el-checkbox__original"),
+    );
+  }
+
+  function resolveElementUiCheckboxLabel(item) {
+    if (!(item instanceof Element)) {
+      return null;
+    }
+    if (item.matches("label.el-checkbox")) {
+      return item;
+    }
+    return item.closest("label.el-checkbox") || item.querySelector("label.el-checkbox");
   }
 
   function getChoiceGroupSelectionSignature(item) {
@@ -2283,6 +2446,53 @@
       );
     }
     if (useNativeClick) {
+      target.click?.();
+    }
+    return true;
+  }
+
+  function simulateDirectUserClick(element, options = {}) {
+    if (!(element instanceof Element)) {
+      return false;
+    }
+
+    const target = element instanceof HTMLElement ? element : element.parentElement;
+    if (!(target instanceof HTMLElement)) {
+      return false;
+    }
+
+    target.scrollIntoView?.({ block: "center", inline: "center", behavior: "instant" });
+    const rect = target.getBoundingClientRect();
+    const clientX = rect.left + Math.max(1, Math.min(rect.width - 1, rect.width / 2 || 1));
+    const clientY = rect.top + Math.max(1, Math.min(rect.height - 1, rect.height / 2 || 1));
+    const common = {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      view: window,
+      clientX,
+      clientY,
+      button: 0,
+    };
+
+    if (typeof PointerEvent === "function") {
+      for (const type of ["pointerover", "pointerenter", "pointerdown", "pointerup"]) {
+        target.dispatchEvent(
+          new PointerEvent(type, {
+            ...common,
+            pointerId: 1,
+            pointerType: "mouse",
+            isPrimary: true,
+          }),
+        );
+      }
+    }
+
+    for (const type of ["mouseover", "mouseenter", "mousedown", "mouseup", "click"]) {
+      target.dispatchEvent(new MouseEvent(type, common));
+    }
+
+    if (options.useNativeClick) {
       target.click?.();
     }
     return true;
@@ -2559,6 +2769,8 @@
       fullPageScreenshotShortcut:
         normalizeShortcut(settings?.fullPageScreenshotShortcut) ||
         state.settings.fullPageScreenshotShortcut,
+      fullAutoShortcut:
+        normalizeShortcut(settings?.fullAutoShortcut) || state.settings.fullAutoShortcut,
       autoSubmitAfterFullCapture: Boolean(
         settings?.autoSubmitAfterFullCapture ?? state.settings.autoSubmitAfterFullCapture,
       ),
@@ -2609,6 +2821,10 @@
       nextSettings.fullPageScreenshotShortcut =
         normalizeShortcut(changes.fullPageScreenshotShortcut.newValue) ||
         state.settings.fullPageScreenshotShortcut;
+    }
+    if (changes.fullAutoShortcut) {
+      nextSettings.fullAutoShortcut =
+        normalizeShortcut(changes.fullAutoShortcut.newValue) || state.settings.fullAutoShortcut;
     }
     if (changes.autoSubmitAfterFullCapture) {
       nextSettings.autoSubmitAfterFullCapture = Boolean(changes.autoSubmitAfterFullCapture.newValue);
@@ -2910,7 +3126,7 @@
   function renderShortcutTip() {
     if (elements.shortcutTip) {
       elements.shortcutTip.textContent =
-        `框选 ${state.settings.screenshotShortcut} / 固定区 ${state.settings.fullPageScreenshotShortcut}${
+        `框选 ${state.settings.screenshotShortcut} / 固定区 ${state.settings.fullPageScreenshotShortcut} / 全自动 ${state.settings.fullAutoShortcut}${
           state.fixedCaptureRegion ? " 已设定" : " 未设定"
         }`;
     }
@@ -4567,10 +4783,16 @@
     document.addEventListener(
       "keydown",
       (event) => {
-        if (!matchesShortcut(event, state.settings.screenshotShortcut)) {
-          if (!matchesShortcut(event, state.settings.fullPageScreenshotShortcut)) {
+        if (matchesShortcut(event, state.settings.fullAutoShortcut)) {
+          if (event.repeat) {
             return;
           }
+          event.preventDefault();
+          void handleToggleFullAuto();
+          return;
+        }
+
+        if (matchesShortcut(event, state.settings.fullPageScreenshotShortcut)) {
           if (event.repeat || isEditableTarget(event.target)) {
             return;
           }
@@ -4578,6 +4800,11 @@
           void handleCaptureFullPageScreenshot();
           return;
         }
+
+        if (!matchesShortcut(event, state.settings.screenshotShortcut)) {
+          return;
+        }
+
         if (event.repeat || isEditableTarget(event.target)) {
           return;
         }
@@ -4618,6 +4845,47 @@
       shift: parts.includes("Shift"),
       key: last.toLowerCase(),
     };
+  }
+
+  function installFrameShortcutBridge() {
+    if (state.frameShortcutBridgeInstalled) {
+      return;
+    }
+
+    state.frameShortcutBridgeInstalled = true;
+    window.addEventListener("message", (event) => {
+      if (event.source === window) {
+        return;
+      }
+
+      const data = event?.data;
+      if (!data || data.source !== "autolearning:frame-shortcut") {
+        return;
+      }
+
+      const shortcut = data.shortcut;
+      if (!shortcut || typeof shortcut !== "object") {
+        return;
+      }
+
+      const parsed = parseShortcut(state.settings.fullAutoShortcut);
+      if (!parsed.key) {
+        return;
+      }
+
+      const key = String(shortcut.key || "").toLowerCase();
+      if (
+        Boolean(shortcut.alt) !== parsed.alt ||
+        Boolean(shortcut.ctrl) !== parsed.ctrl ||
+        Boolean(shortcut.meta) !== parsed.meta ||
+        Boolean(shortcut.shift) !== parsed.shift ||
+        key !== parsed.key
+      ) {
+        return;
+      }
+
+      void handleToggleFullAuto();
+    });
   }
 
   function normalizeShortcut(value) {
@@ -4695,6 +4963,56 @@
 
   function normalizeEventKey(event) {
     const key = String(event.key || "").toLowerCase();
+    if (key === " ") {
+      return "space";
+    }
+    if (key === "esc") {
+      return "escape";
+    }
+    return key;
+  }
+
+  function installFrameShortcutRelay() {
+    if (window.__AUTOLEARNING_FRAME_SHORTCUT_RELAY__) {
+      return;
+    }
+
+    window.__AUTOLEARNING_FRAME_SHORTCUT_RELAY__ = true;
+    document.addEventListener(
+      "keydown",
+      (event) => {
+        if (event.repeat) {
+          return;
+        }
+
+        const key = normalizeFrameRelayKey(event.key);
+        if (!key) {
+          return;
+        }
+
+        window.top.postMessage(
+          {
+            source: "autolearning:frame-shortcut",
+            shortcut: {
+              alt: Boolean(event.altKey),
+              ctrl: Boolean(event.ctrlKey),
+              meta: Boolean(event.metaKey),
+              shift: Boolean(event.shiftKey),
+              key,
+            },
+          },
+          "*",
+        );
+      },
+      true,
+    );
+  }
+
+  function normalizeFrameRelayKey(value) {
+    const key = String(value || "").toLowerCase();
+    if (!key) {
+      return "";
+    }
     if (key === " ") {
       return "space";
     }
@@ -5300,10 +5618,18 @@
         <div class="al-bank-modal-head">
           <div>
             <h3>编辑本地题库答案</h3>
-            <p>看完解析后，可在这里修改答案并保存到本地题库。当前列表会优先展示你本轮刚做过的题。</p>
+            <p>多选题建议先随机作答并提交，看完解析后在这里把答案修正到本地题库。修正完成后，后续做题仍需要你按答案手动勾选选项。</p>
           </div>
           <button type="button" class="al-bank-modal-close" data-role="bank-close" aria-label="关闭">×</button>
         </div>
+        <div class="al-bank-modal-tools">
+          <div class="al-bank-modal-tool-buttons">
+            <button type="button" data-role="bank-export">导出题库</button>
+            <button type="button" data-role="bank-import">导入题库</button>
+          </div>
+          <div class="al-bank-save-indicator" data-role="bank-save-indicator" data-state="idle">支持自动保存</div>
+        </div>
+        <input type="file" data-role="bank-import-input" accept="application/json,.json" hidden />
         <div class="al-bank-list">
           ${items
             .map((item, index) => {
@@ -5333,6 +5659,29 @@
     };
 
     const autoSaveTimers = new Map();
+    let saveIndicatorTimer = 0;
+    const saveIndicator = modal.querySelector('[data-role="bank-save-indicator"]');
+    const importInput = modal.querySelector('[data-role="bank-import-input"]');
+
+    const setSaveIndicator = (text, stateName = "idle", autoReset = false) => {
+      if (!(saveIndicator instanceof HTMLElement)) {
+        return;
+      }
+      saveIndicator.textContent = text;
+      saveIndicator.setAttribute("data-state", stateName);
+      if (saveIndicatorTimer) {
+        window.clearTimeout(saveIndicatorTimer);
+        saveIndicatorTimer = 0;
+      }
+      if (autoReset) {
+        saveIndicatorTimer = window.setTimeout(() => {
+          if (saveIndicator instanceof HTMLElement) {
+            saveIndicator.textContent = "支持自动保存";
+            saveIndicator.setAttribute("data-state", "idle");
+          }
+        }, 1800);
+      }
+    };
 
     const applySingleUpdate = (editorItem, normalizedAnswer) => {
       if (!normalizedAnswer || !Array.isArray(editorItem.keys) || editorItem.keys.length === 0) {
@@ -5398,9 +5747,12 @@
       if (!changed) {
         return false;
       }
+      setSaveIndicator("自动保存中...", "saving");
       await persistQuestionBank();
+      setSaveIndicator("已自动保存", "saved", true);
       if (!options.silent) {
         setStatus(`已自动保存：${editorItem.title}`);
+        showToast(`已自动保存：${editorItem.title}`);
       }
       return true;
     };
@@ -5438,6 +5790,7 @@
       const answerInputs = Array.from(modal.querySelectorAll("input[data-role='bank-answer-input']"));
       let updatedCount = 0;
 
+      setSaveIndicator("保存中...", "saving");
       for (const input of answerInputs) {
         const changed = await saveInputValue(input, { silent: true });
         if (changed) {
@@ -5448,8 +5801,63 @@
       if (updatedCount > 0) {
         setStatus(`题库更正已保存，共更新 ${updatedCount} 条记录。`);
         showToast("题库更正已保存。");
+        setSaveIndicator(`已保存 ${updatedCount} 条`, "saved", true);
       } else {
         setStatus("当前内容已经是最新，已自动保存。");
+        setSaveIndicator("当前已是最新", "saved", true);
+      }
+    };
+
+    const exportQuestionBank = async () => {
+      await ensureQuestionBankLoaded();
+      const payload = {
+        exportedAt: new Date().toISOString(),
+        version: 1,
+        questionBank: state.questionBank || {},
+      };
+      const exportedAt = new Date().toISOString().slice(0, 10);
+      downloadTextFile(
+        `autolearning-question-bank-${exportedAt}.json`,
+        JSON.stringify(payload, null, 2),
+        "application/json;charset=utf-8",
+      );
+      setStatus("题库已导出为 JSON。");
+      showToast("题库已导出。");
+    };
+
+    const importQuestionBank = async (file) => {
+      if (!(file instanceof File)) {
+        return;
+      }
+
+      setSaveIndicator("导入中...", "saving");
+      try {
+        const text = await file.text();
+        const parsed = JSON.parse(text);
+        const rawQuestionBank =
+          parsed && typeof parsed === "object" && parsed.questionBank && typeof parsed.questionBank === "object"
+            ? parsed.questionBank
+            : parsed;
+        const normalized = normalizeQuestionBankMap(rawQuestionBank);
+        const importedKeys = Object.keys(normalized);
+        if (importedKeys.length === 0) {
+          throw new Error("导入文件里没有可用的题库数据。");
+        }
+
+        state.questionBank = {
+          ...state.questionBank,
+          ...normalized,
+        };
+        state.questionBankLoaded = true;
+        await persistQuestionBank();
+        setStatus(`题库导入成功，共合并 ${importedKeys.length} 条记录。`);
+        showToast(`题库已导入 ${importedKeys.length} 条。`);
+        setSaveIndicator(`已导入 ${importedKeys.length} 条`, "saved", true);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setStatus(`题库导入失败：${message}`);
+        showToast("题库导入失败，请检查 JSON 格式。");
+        setSaveIndicator("导入失败", "idle", true);
       }
     };
 
@@ -5478,13 +5886,34 @@
       if (!(target instanceof Element)) {
         return;
       }
+      if (target.getAttribute("data-role") === "bank-export") {
+        void exportQuestionBank();
+        return;
+      }
+      if (target.getAttribute("data-role") === "bank-import") {
+        if (importInput instanceof HTMLInputElement) {
+          importInput.value = "";
+          importInput.click();
+        }
+        return;
+      }
       if (target.getAttribute("data-role") === "bank-close" || target.getAttribute("data-role") === "bank-cancel") {
         closeModal();
+        return;
       }
       if (target.getAttribute("data-role") === "bank-save") {
         void onSave();
       }
     });
+
+    if (importInput instanceof HTMLInputElement) {
+      importInput.addEventListener("change", () => {
+        const file = importInput.files?.[0];
+        if (file) {
+          void importQuestionBank(file);
+        }
+      });
+    }
 
     document.documentElement.appendChild(modal);
   }
