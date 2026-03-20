@@ -1,6 +1,6 @@
 const crypto = require("node:crypto");
 
-const QUESTION_BANK_CATEGORIES = ["educoder", "leetcode", "general"];
+const QUESTION_BANK_CATEGORIES = ["educoder", "zhihuishu", "leetcode", "general"];
 
 function randomId(prefix = "id") {
   return `${prefix}_${crypto.randomBytes(12).toString("hex")}`;

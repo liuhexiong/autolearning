@@ -3,6 +3,8 @@ const DEFAULT_CHOICE_PROMPT =
 const DEFAULT_CODE_PROMPT =
   "当前页面大概率是编程题、代码填空题或需要补全模板的题。请优先保留题目指定语言、函数签名、输入输出格式和已有代码骨架，只补上真正缺失的部分。若页面自带代码与题面冲突，优先相信题面和样例。code 字段只放最终可提交或可复制的内容，不要在 code 里混入解释。尽量给出最稳妥、最容易通过样例和评测的做法。";
 const QUESTION_BANK_CATEGORIES = ["educoder", "zhihuishu", "leetcode", "general"];
+const LOCAL_SERVER_ORIGIN = "http://127.0.0.1:8787";
+const GITHUB_AUTH_STORAGE_KEY = "autolearningGithubAuthSession";
 
 const DEFAULT_SETTINGS = {
   baseUrl: "https://api.deepseek.com/v1",
@@ -36,7 +38,6 @@ const DEFAULT_SETTINGS = {
   cloudRepoOwner: "autolearing",
   cloudRepoName: "question-bank",
   cloudRepoBranch: "main",
-  cloudGithubToken: "",
   cloudAutoSync: false,
 };
 const HISTORY_STORAGE_KEY = "autolearningSolveHistory";
@@ -104,6 +105,27 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "autolearning:submit-contribution") {
     submitContribution(message.category, message.entries)
       .then((result) => sendResponse({ ok: true, result }))
+      .catch((error) => sendResponse({ ok: false, error: formatError(error) }));
+    return true;
+  }
+
+  if (message?.type === "autolearning:github-auth-start") {
+    startGitHubAuth()
+      .then((authSession) => sendResponse({ ok: true, authSession }))
+      .catch((error) => sendResponse({ ok: false, error: formatError(error) }));
+    return true;
+  }
+
+  if (message?.type === "autolearning:github-auth-status") {
+    getGitHubAuthStatus({ forceRefresh: Boolean(message.forceRefresh) })
+      .then((authSession) => sendResponse({ ok: true, authSession }))
+      .catch((error) => sendResponse({ ok: false, error: formatError(error) }));
+    return true;
+  }
+
+  if (message?.type === "autolearning:github-auth-logout") {
+    logoutGitHubAuth()
+      .then(() => sendResponse({ ok: true }))
       .catch((error) => sendResponse({ ok: false, error: formatError(error) }));
     return true;
   }
@@ -406,57 +428,27 @@ async function submitContribution(category, entries) {
   if (normalizedEntries.length === 0) {
     throw new Error("请先选择要贡献的题目。");
   }
-  const settings = await storageGet(DEFAULT_SETTINGS);
-  const owner = String(settings.cloudRepoOwner || "").trim();
-  const repo = String(settings.cloudRepoName || "").trim();
-  const branch = String(settings.cloudRepoBranch || "main").trim() || "main";
-  const token = String(settings.cloudGithubToken || "").trim();
-  if (!owner || !repo) {
-    throw new Error("请先在设置页填写云端仓库所有者和仓库名。");
-  }
-  if (!token) {
-    throw new Error("请先在设置页填写 GitHub Token，再贡献题目。");
+  const authSession = await getGitHubAuthStatus({ forceRefresh: true });
+  if (!authSession?.sessionToken) {
+    throw new Error("请先登录 GitHub，并确保本地服务已启动。");
   }
 
-  const issueTitle = `题库贡献: ${normalizedCategory} ${new Date().toISOString().slice(0, 10)}`;
-  const issueBody = [
-    "这是一批由插件自动整理的题库贡献，请维护者审核后手动合并到 JSON 题库。",
-    "",
-    `分类：${normalizedCategory}`,
-    `数量：${normalizedEntries.length}`,
-    `分支：${branch}`,
-    "",
-    "```json",
-    JSON.stringify(
-      {
-        version: 1,
-        category: normalizedCategory,
-        questions: normalizedEntries.map((entry) => ({
-          stem: String(entry?.stem || "").trim(),
-          answer: String(entry?.answer || "").trim(),
-          source: entry?.sourceMeta?.site || "local-contribution",
-        })),
-      },
-      null,
-      2,
-    ),
-    "```",
-  ].join("\n");
-
-  const payload = await postGitHubIssue(owner, repo, token, {
-    title: issueTitle,
-    body: issueBody,
+  const payload = await fetchLocalServerJson("/contributions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${authSession.sessionToken}`,
+    },
+    body: {
+      category: normalizedCategory,
+      entries: normalizedEntries,
+    },
   });
 
   return {
-    acceptedCount: normalizedEntries.length,
-    duplicateCount: 0,
-    pendingReviewIds: [String(payload?.number || payload?.id || "")].filter(Boolean),
-    results: normalizedEntries.map((entry) => ({
-      clientEntryId: String(entry?.clientEntryId || "").trim(),
-      status: "submitted",
-      issueNumber: Number(payload?.number || 0),
-    })),
+    acceptedCount: Number(payload?.acceptedCount || 0),
+    duplicateCount: Number(payload?.duplicateCount || 0),
+    pendingReviewIds: Array.isArray(payload?.pendingReviewIds) ? payload.pendingReviewIds : [],
+    results: Array.isArray(payload?.results) ? payload.results : [],
   };
 }
 
@@ -481,30 +473,6 @@ async function fetchGitHubCategory(owner, repo, branch, category) {
   }
   if (!response.ok) {
     throw new Error(payload?.message || rawText || `读取云端题库失败，状态码 ${response.status}`);
-  }
-  return payload;
-}
-
-async function postGitHubIssue(owner, repo, token, body) {
-  const response = await fetch(`https://api.github.com/repos/${owner}/${repo}/issues`, {
-    method: "POST",
-    headers: {
-      Accept: "application/vnd.github+json",
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-      "X-GitHub-Api-Version": "2022-11-28",
-    },
-    body: JSON.stringify(body),
-  });
-  const rawText = await response.text();
-  let payload = {};
-  try {
-    payload = rawText ? JSON.parse(rawText) : {};
-  } catch {
-    payload = {};
-  }
-  if (!response.ok) {
-    throw new Error(payload?.message || rawText || `创建 GitHub Issue 失败，状态码 ${response.status}`);
   }
   return payload;
 }
@@ -535,6 +503,229 @@ async function buildPromptPreview(problem, extraInstructionsOverride) {
     hasImage: hasImageInMessage(messages[1].content),
     hasOcr: Boolean(problem?.ocrText),
   };
+}
+
+async function startGitHubAuth() {
+  const existing = await getGitHubAuthStatus({ forceRefresh: true });
+  if (existing?.sessionToken && existing?.user) {
+    return existing;
+  }
+
+  const payload = await fetchLocalServerJson("/auth/github/start", {
+    method: "POST",
+    body: {
+      origin: LOCAL_SERVER_ORIGIN,
+    },
+  });
+  const authUrl = String(payload?.authUrl || "").trim();
+  const pollUrl = String(payload?.pollUrl || "").trim();
+  if (!authUrl || !pollUrl) {
+    throw new Error("登录流程创建失败。");
+  }
+
+  const authTab = await createTab(authUrl);
+  try {
+    const authSession = await pollGitHubAuthFlow(pollUrl);
+    await setGitHubAuthSession(authSession);
+    return authSession;
+  } finally {
+    if (authTab?.id) {
+      chrome.tabs.remove(authTab.id, () => {
+        void chrome.runtime.lastError;
+      });
+    }
+  }
+}
+
+async function getGitHubAuthStatus(options = {}) {
+  const forceRefresh = Boolean(options.forceRefresh);
+  const stored = await getGitHubAuthSession();
+  if (!stored?.sessionToken) {
+    return null;
+  }
+  if (!forceRefresh) {
+    return stored;
+  }
+
+  try {
+    const payload = await fetchLocalServerJson("/me", {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${stored.sessionToken}`,
+      },
+    });
+    const nextSession = {
+      sessionToken: stored.sessionToken,
+      user: payload?.user || stored.user || null,
+    };
+    await setGitHubAuthSession(nextSession);
+    return nextSession;
+  } catch (error) {
+    if (isAuthExpiredError(error)) {
+      await clearGitHubAuthSession();
+      return null;
+    }
+    throw error;
+  }
+}
+
+async function logoutGitHubAuth() {
+  const stored = await getGitHubAuthSession();
+  if (stored?.sessionToken) {
+    try {
+      await fetchLocalServerJson("/auth/logout", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${stored.sessionToken}`,
+        },
+      });
+    } catch (error) {
+      if (!isLocalServerUnavailableError(error) && !isAuthExpiredError(error)) {
+        throw error;
+      }
+    }
+  }
+  await clearGitHubAuthSession();
+}
+
+async function pollGitHubAuthFlow(pollUrl) {
+  const maxAttempts = 240;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const payload = await fetchLocalServerJson(pollUrl, {
+      method: "GET",
+      allowPending: true,
+    });
+    if (payload?.status === "completed" && payload?.authSession?.sessionToken) {
+      return payload.authSession;
+    }
+    await delay(1200);
+  }
+  throw new Error("GitHub 登录超时，请重试。");
+}
+
+async function fetchLocalServerJson(path, options = {}) {
+  const method = String(options.method || "GET").toUpperCase();
+  const headers = {
+    Accept: "application/json",
+    ...(options.headers || {}),
+  };
+  const init = {
+    method,
+    headers,
+  };
+  if (options.body !== undefined) {
+    init.body = JSON.stringify(options.body);
+    headers["Content-Type"] = "application/json";
+  }
+
+  let response;
+  try {
+    response = await fetch(buildLocalServerUrl(path), init);
+  } catch (error) {
+    throw new Error("本地服务不可用，请先启动 `npm run dev:server`。");
+  }
+
+  const rawText = await response.text();
+  let payload = {};
+  try {
+    payload = rawText ? JSON.parse(rawText) : {};
+  } catch {
+    payload = {};
+  }
+
+  if (!response.ok) {
+    throw new Error(payload?.error || payload?.message || rawText || `请求失败，状态码 ${response.status}`);
+  }
+
+  if (!options.allowPending && payload?.ok === false) {
+    throw new Error(payload?.error || payload?.message || "请求失败。");
+  }
+
+  return payload;
+}
+
+function buildLocalServerUrl(path) {
+  const normalizedPath = String(path || "").trim();
+  if (!normalizedPath) {
+    return LOCAL_SERVER_ORIGIN;
+  }
+  if (/^https?:\/\//i.test(normalizedPath)) {
+    return normalizedPath;
+  }
+  return `${LOCAL_SERVER_ORIGIN}${normalizedPath.startsWith("/") ? "" : "/"}${normalizedPath}`;
+}
+
+async function getGitHubAuthSession() {
+  const items = await storageGet({ [GITHUB_AUTH_STORAGE_KEY]: null });
+  return normalizeGitHubAuthSession(items[GITHUB_AUTH_STORAGE_KEY]);
+}
+
+async function setGitHubAuthSession(authSession) {
+  const normalized = normalizeGitHubAuthSession(authSession);
+  if (!normalized) {
+    await clearGitHubAuthSession();
+    return null;
+  }
+  await storageSet({
+    [GITHUB_AUTH_STORAGE_KEY]: {
+      ...normalized,
+      updatedAt: new Date().toISOString(),
+    },
+  });
+  return normalized;
+}
+
+async function clearGitHubAuthSession() {
+  await storageSet({ [GITHUB_AUTH_STORAGE_KEY]: null });
+}
+
+function normalizeGitHubAuthSession(authSession) {
+  if (!authSession || typeof authSession !== "object") {
+    return null;
+  }
+  const sessionToken = String(authSession.sessionToken || "").trim();
+  const user = authSession.user && typeof authSession.user === "object" ? authSession.user : null;
+  if (!sessionToken || !user) {
+    return null;
+  }
+  return {
+    sessionToken,
+    user: {
+      id: String(user.id || "").trim(),
+      login: String(user.login || "").trim(),
+      name: String(user.name || "").trim(),
+      avatarUrl: String(user.avatarUrl || "").trim(),
+      profileUrl: String(user.profileUrl || "").trim(),
+      isAdmin: Boolean(user.isAdmin),
+    },
+    updatedAt: String(authSession.updatedAt || "").trim(),
+  };
+}
+
+function createTab(url) {
+  return new Promise((resolve, reject) => {
+    chrome.tabs.create({ url, active: true }, (tab) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+      resolve(tab);
+    });
+  });
+}
+
+function delay(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function isLocalServerUnavailableError(error) {
+  return error instanceof Error && /本地服务不可用|Failed to fetch|fetch/i.test(error.message || "");
+}
+
+function isAuthExpiredError(error) {
+  return error instanceof Error && /登录|session|token|401|权限/i.test(error.message || "");
 }
 
 function buildSolverMessages(problem, extraInstructions, includeScreenshotInSolver, promptMode = "code") {

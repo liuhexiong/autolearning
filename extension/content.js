@@ -20,6 +20,7 @@
   const FIXED_CAPTURE_STORAGE_KEY = "autolearningFixedCaptureRegions";
   const CUSTOM_EXTRACT_STORAGE_KEY = "autolearningCustomExtractRules";
   const QUESTION_BANK_STORAGE_KEY = "autolearningQuestionBankV1";
+  const GITHUB_AUTH_STORAGE_KEY = "autolearningGithubAuthSession";
   const QUESTION_BANK_CATEGORY_DEFS = [
     { key: "educoder", label: "Educoder" },
     { key: "zhihuishu", label: "智慧树" },
@@ -85,6 +86,7 @@
     questionBankReviewQueue: [],
     reviewModalOpen: false,
     cloudSyncStarted: false,
+    githubAuth: null,
     settings: {
       promptMode: "choice",
       extraInstructionsChoice: DEFAULT_CHOICE_PROMPT,
@@ -101,7 +103,6 @@
       cloudRepoOwner: "autolearing",
       cloudRepoName: "question-bank",
       cloudRepoBranch: "main",
-      cloudGithubToken: "",
       cloudAutoSync: false,
     },
   };
@@ -125,6 +126,7 @@
     void hydrateFixedCaptureRegion();
     void hydrateCustomStatementRule();
     void hydrateQuestionBank();
+    void hydrateGitHubAuthStatus({ forceRefresh: true, silent: true });
     renderSummary("插件已在当前页面就绪。你可以直接截图、读剪贴板，或先识别当前页面内容。");
     renderGeneratedTitle("");
     renderCurrentClassification(null);
@@ -239,6 +241,8 @@
             </div>
             <div class="al-actions al-actions-secondary">
               <button data-role="cloud-sync" type="button">同步云端</button>
+              <button data-role="github-auth-login" type="button">登录 GitHub</button>
+              <button data-role="github-auth-logout" type="button" hidden>退出登录</button>
             </div>
             <div class="al-summary" data-role="platform-summary">云端题库会从 GitHub 下载到本地缓存使用，贡献只会从“我的题库”里选择。</div>
           </section>
@@ -439,6 +443,8 @@
     elements.fullAutoButton = host.querySelector('[data-role="full-auto"]');
     elements.platformSummary = host.querySelector('[data-role="platform-summary"]');
     elements.cloudSync = host.querySelector('[data-role="cloud-sync"]');
+    elements.githubAuthLogin = host.querySelector('[data-role="github-auth-login"]');
+    elements.githubAuthLogout = host.querySelector('[data-role="github-auth-logout"]');
     elements.header = host.querySelector(".al-header");
     elements.ocrText = host.querySelector('[data-role="ocr-text"]');
     elements.historyList = host.querySelector('[data-role="history-list"]');
@@ -456,6 +462,12 @@
     });
     elements.cloudSync?.addEventListener("click", () => {
       void handleCloudSync();
+    });
+    elements.githubAuthLogin?.addEventListener("click", () => {
+      void handleGitHubAuthLogin();
+    });
+    elements.githubAuthLogout?.addEventListener("click", () => {
+      void handleGitHubAuthLogout();
     });
     host.querySelector('[data-role="capture"]').addEventListener("click", () => {
       void handleCaptureScreenshot();
@@ -1329,6 +1341,10 @@
         flex-wrap: wrap;
       }
 
+      .al-bank-auth-summary {
+        width: 100%;
+      }
+
       .al-bank-modal-tool-buttons button {
         border: 0;
         border-radius: 10px;
@@ -1372,6 +1388,45 @@
       .al-bank-save-indicator[data-state="saved"] {
         color: #fff4e8;
         background: rgba(83, 186, 122, 0.2);
+      }
+
+      .al-bank-notice {
+        display: none;
+        padding: 10px 12px;
+        border-radius: 12px;
+        font-size: 13px;
+        line-height: 1.5;
+        color: #f7efe1;
+        background: rgba(255, 255, 255, 0.08);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+      }
+
+      .al-bank-notice[data-show="true"] {
+        display: block;
+      }
+
+      .al-bank-notice[data-state="saving"] {
+        color: #20140e;
+        background: linear-gradient(135deg, rgba(255, 181, 106, 0.96) 0%, rgba(240, 138, 58, 0.96) 100%);
+        border-color: rgba(255, 181, 106, 0.55);
+      }
+
+      .al-bank-notice[data-state="success"] {
+        color: #f4fff6;
+        background: rgba(83, 186, 122, 0.18);
+        border-color: rgba(83, 186, 122, 0.4);
+      }
+
+      .al-bank-notice[data-state="error"] {
+        color: #fff3ef;
+        background: rgba(220, 92, 73, 0.18);
+        border-color: rgba(220, 92, 73, 0.4);
+      }
+
+      .al-bank-notice[data-state="info"] {
+        color: #fff3df;
+        background: rgba(255, 255, 255, 0.08);
+        border-color: rgba(255, 255, 255, 0.12);
       }
 
       .al-bank-modal-close {
@@ -3133,6 +3188,7 @@
     try {
       const settings = await getCurrentSettings();
       applySettings(settings);
+      await hydrateGitHubAuthStatus({ forceRefresh: true, silent: true });
       renderPlatformSummary();
       await refreshPromptPreview({ silent: true });
       await refreshHistory({ silent: true });
@@ -3184,7 +3240,6 @@
       cloudRepoOwner: String(settings?.cloudRepoOwner || state.settings.cloudRepoOwner || "").trim(),
       cloudRepoName: String(settings?.cloudRepoName || state.settings.cloudRepoName || "").trim(),
       cloudRepoBranch: String(settings?.cloudRepoBranch || state.settings.cloudRepoBranch || "").trim(),
-      cloudGithubToken: String(settings?.cloudGithubToken || state.settings.cloudGithubToken || "").trim(),
       cloudAutoSync: Boolean(settings?.cloudAutoSync),
     };
     renderShortcutTip();
@@ -3251,11 +3306,12 @@
     if (changes.cloudRepoBranch) {
       nextSettings.cloudRepoBranch = String(changes.cloudRepoBranch.newValue || "").trim();
     }
-    if (changes.cloudGithubToken) {
-      nextSettings.cloudGithubToken = String(changes.cloudGithubToken.newValue || "").trim();
-    }
     if (changes.cloudAutoSync) {
       nextSettings.cloudAutoSync = Boolean(changes.cloudAutoSync.newValue);
+    }
+    if (changes[GITHUB_AUTH_STORAGE_KEY]) {
+      state.githubAuth = normalizeGitHubAuthSession(changes[GITHUB_AUTH_STORAGE_KEY].newValue);
+      renderPlatformSummary();
     }
     if (changes[CUSTOM_EXTRACT_STORAGE_KEY]) {
       void hydrateCustomStatementRule();
@@ -3612,11 +3668,152 @@
     const owner = String(state.settings.cloudRepoOwner || "").trim();
     const repo = String(state.settings.cloudRepoName || "").trim();
     const branch = String(state.settings.cloudRepoBranch || "").trim() || "main";
+    const auth = normalizeGitHubAuthSession(state.githubAuth);
+    const authLabel = auth?.user
+      ? auth.user.name
+        ? `${auth.user.name} (@${auth.user.login})`
+        : `@${auth.user.login}`
+      : "";
     if (!owner || !repo) {
-      elements.platformSummary.textContent = "还没有配置云端仓库；配置后可从 GitHub 同步公共题库到本地。";
+      elements.platformSummary.textContent = authLabel
+        ? `还没有配置云端仓库。当前已登录 GitHub：${authLabel}。`
+        : "还没有配置云端仓库；配置后可从 GitHub 同步公共题库到本地。";
+      if (elements.githubAuthLogin instanceof HTMLElement) {
+        elements.githubAuthLogin.hidden = false;
+      }
+      if (elements.githubAuthLogout instanceof HTMLElement) {
+        elements.githubAuthLogout.hidden = !auth;
+      }
       return;
     }
-    elements.platformSummary.textContent = `当前云端仓库：${owner}/${repo}@${branch}。云端题库只做下载分发，贡献只从“我的题库”里选择。`;
+    elements.platformSummary.textContent = authLabel
+      ? `当前云端仓库：${owner}/${repo}@${branch}。已登录 GitHub：${authLabel}。同步云端不需要登录，贡献题目会复用当前登录态。`
+      : `当前云端仓库：${owner}/${repo}@${branch}。同步云端不需要登录；贡献题目时会要求先登录 GitHub，并确保本地服务已启动。`;
+    if (elements.githubAuthLogin instanceof HTMLElement) {
+      elements.githubAuthLogin.hidden = false;
+    }
+    if (elements.githubAuthLogout instanceof HTMLElement) {
+      elements.githubAuthLogout.hidden = !auth;
+    }
+  }
+
+  async function hydrateGitHubAuthStatus(options = {}) {
+    try {
+      const response = await sendMessage({
+        type: "autolearning:github-auth-status",
+        forceRefresh: Boolean(options.forceRefresh),
+      });
+      if (!response?.ok) {
+        throw new Error(response?.error || "读取 GitHub 登录状态失败");
+      }
+      state.githubAuth = normalizeGitHubAuthSession(response.authSession);
+      renderPlatformSummary();
+      return state.githubAuth;
+    } catch (error) {
+      state.githubAuth = null;
+      renderPlatformSummary();
+      if (!options.silent) {
+        setStatus(error instanceof Error ? error.message : String(error));
+      }
+      return null;
+    }
+  }
+
+  async function handleGitHubAuthLogin(options = {}) {
+    try {
+      if (!options.silent) {
+        setStatus("正在打开 GitHub 登录...", {
+          busy: true,
+          hint: "需要本地服务已启动。",
+        });
+      }
+      const response = await sendMessage({ type: "autolearning:github-auth-start" });
+      if (!response?.ok) {
+        throw new Error(response?.error || "GitHub 登录失败");
+      }
+      state.githubAuth = normalizeGitHubAuthSession(response.authSession);
+      renderPlatformSummary();
+      if (!options.silent) {
+        const login = state.githubAuth?.user?.login;
+        setStatus(login ? `GitHub 登录成功：${login}` : "GitHub 登录成功。");
+      }
+      return state.githubAuth;
+    } catch (error) {
+      if (!options.silent) {
+        setStatus(error instanceof Error ? error.message : String(error));
+      }
+      throw error;
+    }
+  }
+
+  async function handleGitHubAuthLogout(options = {}) {
+    try {
+      if (!options.silent) {
+        setStatus("正在退出 GitHub...");
+      }
+      const response = await sendMessage({ type: "autolearning:github-auth-logout" });
+      if (!response?.ok) {
+        throw new Error(response?.error || "退出 GitHub 登录失败");
+      }
+      state.githubAuth = null;
+      renderPlatformSummary();
+      if (!options.silent) {
+        setStatus("已退出 GitHub 登录。");
+      }
+    } catch (error) {
+      if (!options.silent) {
+        setStatus(error instanceof Error ? error.message : String(error));
+      }
+      throw error;
+    }
+  }
+
+  function normalizeGitHubAuthSession(authSession) {
+    if (!authSession || typeof authSession !== "object") {
+      return null;
+    }
+    const sessionToken = String(authSession.sessionToken || "").trim();
+    const user = authSession.user && typeof authSession.user === "object" ? authSession.user : null;
+    if (!sessionToken || !user) {
+      return null;
+    }
+    return {
+      sessionToken,
+      user: {
+        id: String(user.id || "").trim(),
+        login: String(user.login || "").trim(),
+        name: String(user.name || "").trim(),
+        avatarUrl: String(user.avatarUrl || "").trim(),
+        profileUrl: String(user.profileUrl || "").trim(),
+        isAdmin: Boolean(user.isAdmin),
+      },
+      updatedAt: String(authSession.updatedAt || "").trim(),
+    };
+  }
+
+  function buildGitHubAuthSummaryHtml(options = {}) {
+    const auth = normalizeGitHubAuthSession(options.auth ?? state.githubAuth);
+    if (!auth?.user) {
+      return `
+        <div class="al-summary-card">
+          <div class="al-summary-grid">
+            ${buildSummaryRow("GitHub", "未登录")}
+            ${buildSummaryHint("贡献题目时会先要求登录 GitHub；同步云端题库不受影响。", "warning")}
+          </div>
+        </div>
+      `;
+    }
+    const userLabel = auth.user.name
+      ? `${auth.user.name} (@${auth.user.login})`
+      : `@${auth.user.login}`;
+    return `
+      <div class="al-summary-card">
+        <div class="al-summary-grid">
+          ${buildSummaryRow("GitHub", userLabel)}
+          ${buildSummaryHint("当前登录态会用于“贡献选中题目”，不会影响匿名同步云端题库。")}
+        </div>
+      </div>
+    `;
   }
 
   async function handleCloudSync(options = {}) {
@@ -7267,6 +7464,7 @@
     state.reviewModalOpen = true;
     let activeTab = "mine";
     let selectedCategory = resolvePreferredQuestionBankCategory(state.problem);
+    let isSubmittingContribution = false;
     const modal = document.createElement("div");
     modal.className = "al-bank-modal";
     modal.setAttribute("data-role", "question-bank-modal");
@@ -7291,6 +7489,7 @@
           </div>
           <div class="al-bank-save-indicator" data-role="bank-save-indicator" data-state="idle">支持自动保存</div>
         </div>
+        <div class="al-bank-notice" data-role="bank-notice" data-show="false" data-state="info"></div>
         <input type="file" data-role="bank-import-input" accept="application/json,.json" hidden />
         <div data-role="bank-tab-panel"></div>
       </div>
@@ -7303,7 +7502,9 @@
 
     const autoSaveTimers = new Map();
     let saveIndicatorTimer = 0;
+    let bankNoticeTimer = 0;
     const saveIndicator = modal.querySelector('[data-role="bank-save-indicator"]');
+    const bankNotice = modal.querySelector('[data-role="bank-notice"]');
     const importInput = modal.querySelector('[data-role="bank-import-input"]');
     const tabPanel = modal.querySelector('[data-role="bank-tab-panel"]');
 
@@ -7324,6 +7525,28 @@
             saveIndicator.setAttribute("data-state", "idle");
           }
         }, 1800);
+      }
+    };
+
+    const setBankNotice = (text, stateName = "info", autoReset = false) => {
+      if (!(bankNotice instanceof HTMLElement)) {
+        return;
+      }
+      bankNotice.textContent = String(text || "").trim();
+      bankNotice.setAttribute("data-state", stateName);
+      bankNotice.setAttribute("data-show", text ? "true" : "false");
+      if (bankNoticeTimer) {
+        window.clearTimeout(bankNoticeTimer);
+        bankNoticeTimer = 0;
+      }
+      if (autoReset && text) {
+        bankNoticeTimer = window.setTimeout(() => {
+          if (bankNotice instanceof HTMLElement) {
+            bankNotice.textContent = "";
+            bankNotice.setAttribute("data-show", "false");
+            bankNotice.setAttribute("data-state", "info");
+          }
+        }, 2600);
       }
     };
 
@@ -7406,7 +7629,7 @@
       setSaveIndicator("已自动保存", "saved", true);
       if (!options.silent) {
         setStatus(`已自动保存：${editorItem.title}`);
-        showToast(`已自动保存：${editorItem.title}`);
+        setBankNotice(`已自动保存：${editorItem.title}`, "success", true);
       }
       return true;
     };
@@ -7465,6 +7688,12 @@
 
       const visibleItems = getVisibleItems();
       const isMineTab = activeTab === "mine";
+      const contributableCount = visibleItems.filter(
+        (item) =>
+          item.source === "local" &&
+          item.status === "answered" &&
+          normalizeQuestionBankCategory(item.category) === selectedCategory,
+      ).length;
       tabPanel.innerHTML = `
         ${
           isMineTab
@@ -7477,6 +7706,14 @@
                     ).join("")}
                   </select>
                   <button type="button" data-role="bank-select-all">全选可贡献题</button>
+                  <button type="button" class="al-bank-modal-save" data-role="bank-submit" ${contributableCount > 0 && !isSubmittingContribution ? "" : "disabled"}>
+                    ${isSubmittingContribution ? "提交贡献中..." : "贡献选中题目"}
+                  </button>
+                </div>
+                <div class="al-bank-auth-summary">${buildGitHubAuthSummaryHtml()}</div>
+                <div class="al-bank-modal-tool-buttons">
+                  <button type="button" data-role="bank-auth-login">登录 GitHub</button>
+                  <button type="button" data-role="bank-auth-logout" ${state.githubAuth?.sessionToken ? "" : "disabled"}>退出登录</button>
                 </div>
               </div>`
             : `<div class="al-bank-empty"><p>云端题库只读展示，会在本地直接参与匹配，不会出现在贡献列表里。</p></div>`
@@ -7530,7 +7767,6 @@
         </div>
         <div class="al-bank-modal-actions">
           <button type="button" class="al-bank-modal-cancel" data-role="bank-cancel">关闭</button>
-          ${isMineTab && visibleItems.length > 0 ? `<button type="button" class="al-bank-modal-save" data-role="bank-submit">贡献选中题目</button>` : ""}
           ${isMineTab && visibleItems.length > 0 ? `<button type="button" class="al-bank-modal-save" data-role="bank-save">手动保存（可选）</button>` : ""}
         </div>
       `;
@@ -7563,6 +7799,24 @@
         });
       }
 
+      const authLoginButton = tabPanel.querySelector('[data-role="bank-auth-login"]');
+      if (authLoginButton instanceof HTMLButtonElement) {
+        authLoginButton.addEventListener("click", () => {
+          void handleGitHubAuthLogin().then(() => {
+            renderTabPanel();
+          }).catch(() => {});
+        });
+      }
+
+      const authLogoutButton = tabPanel.querySelector('[data-role="bank-auth-logout"]');
+      if (authLogoutButton instanceof HTMLButtonElement) {
+        authLogoutButton.addEventListener("click", () => {
+          void handleGitHubAuthLogout().then(() => {
+            renderTabPanel();
+          }).catch(() => {});
+        });
+      }
+
       renderTabButtons();
     };
 
@@ -7580,10 +7834,11 @@
 
       if (updatedCount > 0) {
         setStatus(`题库更正已保存，共更新 ${updatedCount} 条记录。`);
-        showToast("题库更正已保存。");
+        setBankNotice(`题库更正已保存，共更新 ${updatedCount} 条记录。`, "success", true);
         setSaveIndicator(`已保存 ${updatedCount} 条`, "saved", true);
       } else {
         setStatus("当前内容已经是最新，已自动保存。");
+        setBankNotice("当前内容已经是最新，已自动保存。", "info", true);
         setSaveIndicator("当前已是最新", "saved", true);
       }
     };
@@ -7618,7 +7873,7 @@
         "application/json;charset=utf-8",
       );
       setStatus("题库已导出为 JSON。");
-      showToast("题库已导出。");
+      setBankNotice("题库已导出。", "success", true);
     };
 
     const importQuestionBank = async (file) => {
@@ -7655,12 +7910,12 @@
         items.splice(0, items.length, ...latestItems);
         renderTabPanel();
         setStatus(`题库导入成功，共合并 ${importedKeys.length} 条记录。`);
-        showToast(`题库已导入 ${importedKeys.length} 条。`);
+        setBankNotice(`题库已导入 ${importedKeys.length} 条。`, "success", true);
         setSaveIndicator(`已导入 ${importedKeys.length} 条`, "saved", true);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         setStatus(`题库导入失败：${message}`);
-        showToast("题库导入失败，请检查 JSON 格式。");
+        setBankNotice(`题库导入失败：${message}`, "error");
         setSaveIndicator("导入失败", "idle", true);
       }
     };
@@ -7700,7 +7955,7 @@
 
       if (migratedCount === 0) {
         setStatus("没有可整理的旧题库分类。");
-        showToast("旧题库分类已经是最新。");
+        setBankNotice("旧题库分类已经是最新。", "info", true);
         return;
       }
 
@@ -7709,7 +7964,7 @@
       items.splice(0, items.length, ...latestItems);
       renderTabPanel();
       setStatus(`旧题库分类整理完成，共迁移 ${migratedCount} 条。选择题已归到智慧树，代码题已归到 Educoder。`);
-      showToast(`已整理 ${migratedCount} 条旧题库分类。`);
+      setBankNotice(`已整理 ${migratedCount} 条旧题库分类。`, "success", true);
     };
 
     const submitContributions = async () => {
@@ -7720,7 +7975,9 @@
           : normalizeQuestionBankCategory(selectedCategory);
       const pickedInputs = Array.from(tabPanel.querySelectorAll("input[data-role='bank-pick-input']:checked"));
       if (pickedInputs.length === 0) {
+        setSaveIndicator("请先勾选题目", "idle", true);
         setStatus("请先勾选要贡献的题目。");
+        setBankNotice("请先勾选要贡献的题目。", "info", true);
         return;
       }
 
@@ -7754,29 +8011,50 @@
         .filter(Boolean);
 
       if (entries.length === 0) {
+        setSaveIndicator("没有可提交内容", "idle", true);
         setStatus("当前选中的题目没有可提交内容。");
+        setBankNotice("当前选中的题目没有可提交内容。", "info", true);
         return;
       }
 
-      setSaveIndicator("提交贡献中...", "saving");
-      const response = await sendMessage({
-        type: "autolearning:submit-contribution",
-        category: submitCategory,
-        entries,
-      });
-      if (!response?.ok) {
-        throw new Error(response?.error || "贡献提交失败");
-      }
-
-      const results = Array.isArray(response.result?.results) ? response.result.results : [];
-      applyContributionResults(items, results, submitCategory);
-      await persistQuestionBank();
+      isSubmittingContribution = true;
       renderTabPanel();
-      setSaveIndicator("贡献已提交", "saved", true);
-      const submittedCount = results.filter((item) => item.status === "submitted").length;
-      const duplicateCount = results.filter((item) => item.status === "duplicate").length;
-      setStatus(`贡献提交完成：待审核 ${submittedCount} 条，重复 ${duplicateCount} 条。`);
-      showToast(`贡献完成：待审核 ${submittedCount} 条，重复 ${duplicateCount} 条。`);
+      setSaveIndicator("提交贡献中...", "saving");
+      setBankNotice("提交贡献中...", "saving");
+      try {
+        if (!normalizeGitHubAuthSession(state.githubAuth)) {
+          setBankNotice("当前还没有 GitHub 登录，正在打开登录流程...", "info");
+          await handleGitHubAuthLogin({ silent: true });
+          renderTabPanel();
+        }
+        const response = await sendMessage({
+          type: "autolearning:submit-contribution",
+          category: submitCategory,
+          entries,
+        });
+        if (!response?.ok) {
+          throw new Error(response?.error || "贡献提交失败");
+        }
+
+        const results = Array.isArray(response.result?.results) ? response.result.results : [];
+        applyContributionResults(items, results, submitCategory);
+        await persistQuestionBank();
+        const submittedCount = results.filter((item) => item.status === "submitted").length;
+        const duplicateCount = results.filter((item) => item.status === "duplicate").length;
+        const summaryText = `贡献完成：待审核 ${submittedCount} 条，重复 ${duplicateCount} 条。`;
+        setSaveIndicator(summaryText, "saved", true);
+        setStatus(`贡献提交完成：待审核 ${submittedCount} 条，重复 ${duplicateCount} 条。`);
+        setBankNotice(summaryText, "success", true);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setSaveIndicator("提交失败", "idle", true);
+        setStatus(message);
+        setBankNotice(`贡献提交失败：${message}`, "error");
+        throw error;
+      } finally {
+        isSubmittingContribution = false;
+        renderTabPanel();
+      }
     };
 
     modal.addEventListener("click", (event) => {
@@ -7791,6 +8069,7 @@
       if (target.getAttribute("data-role") === "bank-migrate-legacy") {
         void migrateLegacyQuestionBankCategories().catch((error) => {
           setStatus(error instanceof Error ? error.message : String(error));
+          setBankNotice(error instanceof Error ? error.message : String(error), "error");
         });
         return;
       }
@@ -7832,6 +8111,7 @@
         void submitContributions().catch((error) => {
           setSaveIndicator("提交失败", "idle", true);
           setStatus(error instanceof Error ? error.message : String(error));
+          setBankNotice(`贡献提交失败：${error instanceof Error ? error.message : String(error)}`, "error");
         });
       }
     });

@@ -280,7 +280,7 @@
               id="cloudRepoOwner"
               name="cloudRepoOwner"
               type="text"
-              placeholder="autolearing"
+              placeholder="liuhexiong"
             />
             <small>用于同步公共题库的 GitHub 仓库所有者。</small>
           </label>
@@ -307,17 +307,15 @@
             <small>默认同步 `main` 分支，也可以改成你自己的分支。</small>
           </label>
 
-          <label class="field">
-            <span>GitHub Token（贡献可选）</span>
-            <input
-              id="cloudGithubToken"
-              name="cloudGithubToken"
-              type="password"
-              placeholder="ghp_..."
-              autocomplete="off"
-            />
-            <small>仅在“贡献题目”时用于创建 GitHub Issue；只同步云端题库时可以留空。</small>
-          </label>
+          <div class="field">
+            <span>GitHub 登录（用于贡献题目）</span>
+            <div id="authSessionSummary" class="status">正在读取 GitHub 登录状态...</div>
+            <div class="actions" style="margin-top: 10px;">
+              <button type="button" id="githubAuthLogin" class="secondary">登录 GitHub</button>
+              <button type="button" id="githubAuthLogout" class="secondary">退出登录</button>
+            </div>
+            <small>同步云端题库不需要登录；只有贡献题目、审核等服务端能力才需要先启动本地服务并登录 GitHub。</small>
+          </div>
 
           <label class="toggle-field" for="cloudAutoSync">
             <span class="toggle-copy">
@@ -329,8 +327,8 @@
 
           <div class="field">
             <span>当前云端仓库</span>
-            <div id="authSessionSummary" class="status">还没有配置云端仓库。</div>
-            <small>这里只显示当前同步目标仓库；轻量版不依赖服务端登录。</small>
+            <div id="cloudRepoSummary" class="status">还没有配置云端仓库。</div>
+            <small>这里只影响 GitHub JSON 下载；不会改变 GitHub 登录状态。</small>
           </div>
 
           <div class="actions">

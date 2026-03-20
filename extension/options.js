@@ -2,7 +2,6 @@ const DEFAULT_CHOICE_PROMPT =
   "当前页面大概率是选择题、判断题、概念题或简答型理论题。请优先输出最终答案，而不是写完整程序。若题目是单选题，code 字段只放最终选项，例如 A、B、C、D；若是多选题，code 字段只放选项组合，例如 AC；若是判断题，code 字段只放“对”或“错”；若是简短填空或概念问答，code 字段只放最终可直接填写的简短答案。不要输出 main 函数，不要伪造代码。approach 用 3 到 5 句简洁说明你的判断依据，重点使用关键词匹配、概念定义和排除法。";
 const DEFAULT_CODE_PROMPT =
   "当前页面大概率是编程题、代码填空题或需要补全模板的题。请优先保留题目指定语言、函数签名、输入输出格式和已有代码骨架，只补上真正缺失的部分。若页面自带代码与题面冲突，优先相信题面和样例。code 字段只放最终可提交或可复制的内容，不要在 code 里混入解释。尽量给出最稳妥、最容易通过样例和评测的做法。";
-
 const DEFAULT_SETTINGS = {
   baseUrl: "https://api.deepseek.com/v1",
   apiKey: "sk-9a70b94a7ec04788952e228c62529c54",
@@ -33,10 +32,9 @@ const DEFAULT_SETTINGS = {
   ocrPrompt:
     "请只做 OCR，尽量完整提取图片中的中文、英文、公式、选项和输入输出要求。不要解释，不要总结，只返回纯文本。",
   historyLimit: 50,
-  cloudRepoOwner: "autolearing",
+  cloudRepoOwner: "liuhexiong",
   cloudRepoName: "question-bank",
   cloudRepoBranch: "main",
-  cloudGithubToken: "",
   cloudAutoSync: false,
 };
 
@@ -46,8 +44,25 @@ const resetButton = document.getElementById("reset");
 const restoreChoicePromptButton = document.getElementById("restoreChoicePrompt");
 const restoreCodePromptButton = document.getElementById("restoreCodePrompt");
 const authSessionSummaryNode = document.getElementById("authSessionSummary");
+const cloudRepoSummaryNode = document.getElementById("cloudRepoSummary");
+const githubAuthLoginButton = document.getElementById("githubAuthLogin");
+const githubAuthLogoutButton = document.getElementById("githubAuthLogout");
+
+let currentAuthSession = null;
 
 void hydrateForm();
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName !== "local") {
+    return;
+  }
+  if (changes.autolearningGithubAuthSession) {
+    renderAuthSessionSummary(changes.autolearningGithubAuthSession.newValue || null);
+  }
+  if (changes.cloudRepoOwner || changes.cloudRepoName || changes.cloudRepoBranch) {
+    void hydrateForm();
+    return;
+  }
+});
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -87,7 +102,6 @@ form.addEventListener("submit", async (event) => {
     cloudRepoOwner: document.getElementById("cloudRepoOwner").value.trim(),
     cloudRepoName: document.getElementById("cloudRepoName").value.trim(),
     cloudRepoBranch: document.getElementById("cloudRepoBranch").value.trim(),
-    cloudGithubToken: document.getElementById("cloudGithubToken").value.trim(),
     cloudAutoSync: document.getElementById("cloudAutoSync").checked,
     temperature: DEFAULT_SETTINGS.temperature,
   };
@@ -117,6 +131,40 @@ restoreCodePromptButton.addEventListener("click", async () => {
     extraInstructions: DEFAULT_CODE_PROMPT,
   });
   setStatus("已恢复代码题默认提示词。");
+});
+
+githubAuthLoginButton?.addEventListener("click", async () => {
+  setStatus("正在打开 GitHub 登录...");
+  try {
+    const response = await sendMessage({ type: "autolearning:github-auth-start" });
+    if (!response?.ok) {
+      throw new Error(response?.error || "GitHub 登录失败");
+    }
+    currentAuthSession = normalizeAuthSession(response.authSession);
+    renderAuthSessionSummary(currentAuthSession);
+    setStatus(
+      currentAuthSession?.user?.login
+        ? `GitHub 登录成功：${currentAuthSession.user.login}`
+        : "GitHub 登录成功。",
+    );
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : String(error));
+  }
+});
+
+githubAuthLogoutButton?.addEventListener("click", async () => {
+  setStatus("正在退出 GitHub...");
+  try {
+    const response = await sendMessage({ type: "autolearning:github-auth-logout" });
+    if (!response?.ok) {
+      throw new Error(response?.error || "退出登录失败");
+    }
+    currentAuthSession = null;
+    renderAuthSessionSummary(null);
+    setStatus("已退出 GitHub 登录。");
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : String(error));
+  }
 });
 
 async function hydrateForm() {
@@ -163,9 +211,9 @@ async function hydrateForm() {
   document.getElementById("cloudRepoOwner").value = values.cloudRepoOwner || DEFAULT_SETTINGS.cloudRepoOwner;
   document.getElementById("cloudRepoName").value = values.cloudRepoName || DEFAULT_SETTINGS.cloudRepoName;
   document.getElementById("cloudRepoBranch").value = values.cloudRepoBranch || DEFAULT_SETTINGS.cloudRepoBranch;
-  document.getElementById("cloudGithubToken").value = values.cloudGithubToken || "";
   document.getElementById("cloudAutoSync").checked = Boolean(values.cloudAutoSync);
-  renderAuthSessionSummary(values);
+  renderCloudRepoSummary(values);
+  await refreshGitHubAuthStatus({ forceRefresh: true, silent: true });
 }
 
 function storageGet(defaults) {
@@ -196,18 +244,87 @@ function setStatus(text) {
   statusNode.textContent = text;
 }
 
-function renderAuthSessionSummary(values) {
-  if (!authSessionSummaryNode) {
+function renderCloudRepoSummary(values) {
+  if (!cloudRepoSummaryNode) {
     return;
   }
   const owner = String(values?.cloudRepoOwner || "").trim();
   const repo = String(values?.cloudRepoName || "").trim();
   const branch = String(values?.cloudRepoBranch || "").trim();
   if (!owner || !repo) {
-    authSessionSummaryNode.textContent = "还没有配置云端仓库。";
+    cloudRepoSummaryNode.textContent = "还没有配置云端仓库。";
     return;
   }
-  authSessionSummaryNode.textContent = `${owner}/${repo}${branch ? `@${branch}` : ""}`;
+  cloudRepoSummaryNode.textContent = `${owner}/${repo}${branch ? `@${branch}` : ""}`;
+}
+
+function renderAuthSessionSummary(authSession) {
+  if (!authSessionSummaryNode) {
+    return;
+  }
+  const normalized = normalizeAuthSession(authSession);
+  currentAuthSession = normalized;
+  if (!normalized?.sessionToken || !normalized?.user) {
+    authSessionSummaryNode.textContent = "未登录 GitHub。贡献题目时会先要求登录，并需要本地服务已启动。";
+    if (githubAuthLoginButton) {
+      githubAuthLoginButton.disabled = false;
+    }
+    if (githubAuthLogoutButton) {
+      githubAuthLogoutButton.disabled = true;
+    }
+    return;
+  }
+  const userLabel = normalized.user.name
+    ? `${normalized.user.name} (@${normalized.user.login})`
+    : `@${normalized.user.login}`;
+  authSessionSummaryNode.textContent = `已登录 GitHub：${userLabel}`;
+  if (githubAuthLoginButton) {
+    githubAuthLoginButton.disabled = false;
+  }
+  if (githubAuthLogoutButton) {
+    githubAuthLogoutButton.disabled = false;
+  }
+}
+
+async function refreshGitHubAuthStatus(options = {}) {
+  try {
+    const response = await sendMessage({
+      type: "autolearning:github-auth-status",
+      forceRefresh: Boolean(options.forceRefresh),
+    });
+    if (!response?.ok) {
+      throw new Error(response?.error || "读取 GitHub 登录状态失败");
+    }
+    renderAuthSessionSummary(response.authSession || null);
+  } catch (error) {
+    renderAuthSessionSummary(null);
+    if (!options.silent) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    }
+  }
+}
+
+function normalizeAuthSession(authSession) {
+  if (!authSession || typeof authSession !== "object") {
+    return null;
+  }
+  const sessionToken = String(authSession.sessionToken || "").trim();
+  const user = authSession.user && typeof authSession.user === "object" ? authSession.user : null;
+  if (!sessionToken || !user) {
+    return null;
+  }
+  return {
+    sessionToken,
+    user: {
+      id: String(user.id || "").trim(),
+      login: String(user.login || "").trim(),
+      name: String(user.name || "").trim(),
+      avatarUrl: String(user.avatarUrl || "").trim(),
+      profileUrl: String(user.profileUrl || "").trim(),
+      isAdmin: Boolean(user.isAdmin),
+    },
+    updatedAt: String(authSession.updatedAt || "").trim(),
+  };
 }
 
 function normalizeHistoryLimitInput(value) {
@@ -287,6 +404,18 @@ function normalizeShortcut(value) {
   }
 
   return [...modifiers, key].join("+");
+}
+
+function sendMessage(message) {
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage(message, (response) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+      resolve(response);
+    });
+  });
 }
 
 function formatShortcutKey(value) {
