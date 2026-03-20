@@ -50,6 +50,14 @@ body {
   letter-spacing: -0.04em;
 }
 
+.slogan {
+  margin: 8px 0 0;
+  font-size: 14px;
+  font-style: italic;
+  color: var(--accent);
+  letter-spacing: 0.05em;
+}
+
 .hero-text {
   max-width: 720px;
   margin: 16px 0 0;

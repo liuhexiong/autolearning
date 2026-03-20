@@ -25,7 +25,9 @@
   const MOBILE_BREAKPOINT = 720;
   const DRAG_THRESHOLD = 6;
   const PANEL_VISIBLE_STRIP = 72;
-  const AI_STATUS_ICON_URL = chrome.runtime.getURL("assets/newaistatus.png");
+  const EDGE_SNAP_THRESHOLD = 80;
+  const LAUNCHER_ICON_URL = chrome.runtime.getURL("assets/launcher-logo.png");
+  const SPINNER_ICON_URL = chrome.runtime.getURL("assets/spinner-logo.png");
   const CLOSE_CROSS_ICON_URL = chrome.runtime.getURL("assets/close-cross.svg");
   const DEFAULT_CHOICE_PROMPT =
     "当前页面大概率是选择题、判断题、概念题或简答型理论题。请优先输出最终答案，而不是写完整程序。若题目是单选题，code 字段只放最终选项，例如 A、B、C、D；若是多选题，code 字段只放选项组合，例如 AC；若是判断题，code 字段只放“对”或“错”；若是简短填空或概念问答，code 字段只放最终可直接填写的简短答案。不要输出 main 函数，不要伪造代码。approach 用 3 到 5 句简洁说明你的判断依据，重点使用关键词匹配、概念定义和排除法。";
@@ -44,6 +46,10 @@
     history: [],
     lastUrl: location.href,
     launcherPosition: null,
+    launcherSnappedEdge: null, // 'left', 'right', or null
+    launcherPositionBeforeSnap: null,
+    launcherAnimating: false,
+    launcherHoverTimer: 0,
     panelManualPosition: null,
     dragPointerId: null,
     dragStartPointer: null,
@@ -70,7 +76,7 @@
     questionBankReviewQueue: [],
     reviewModalOpen: false,
     settings: {
-      promptMode: "code",
+      promptMode: "choice",
       extraInstructionsChoice: DEFAULT_CHOICE_PROMPT,
       extraInstructionsCode: DEFAULT_CODE_PROMPT,
       includeScreenshotInSolver: true,
@@ -109,6 +115,9 @@
     renderPromptPreview("还没有可预览的内容。");
     renderScreenshotStatus(null);
     renderOcrText("");
+    renderGeneratedCode("");
+    renderCompactCodeCopyStatus(false);
+    syncPromptModeUi();
     renderHistory([]);
     setStatus("插件已在当前网站启用。");
   }
@@ -166,14 +175,20 @@
     const host = document.createElement("div");
     host.id = HOST_ID;
     host.innerHTML = `
-      <button id="${LAUNCHER_ID}" type="button" aria-label="打开学习助手"><span class="al-visually-hidden">学习助手</span></button>
+      <button id="${LAUNCHER_ID}" type="button" aria-label="打开智拓"><span class="al-visually-hidden">智拓</span></button>
       <div id="autolearning-toast" aria-live="polite"></div>
       <aside id="${PANEL_ID}" data-open="false" aria-hidden="true">
         <div class="al-card">
           <header class="al-header">
             <div>
-              <p class="al-kicker">学习助手</p>
-              <h2>学习助手</h2>
+              <p class="al-kicker">智拓</p>
+              <h2>智拓</h2>
+              <p class="al-slogan">智启新知，拓学无界</p>
+            </div>
+            <div class="al-header-note">
+              <p>多选题现在支持提取题面和选项。</p>
+              <p>单选题和多选题都支持自动勾选。</p>
+              <p>多选题自动勾选后请确认选择是否完整。</p>
             </div>
             <button class="al-close" type="button" aria-label="关闭面板"><span class="al-visually-hidden">关闭</span></button>
           </header>
@@ -203,6 +218,14 @@
               <button data-role="copy-choice-answer" type="button" class="al-link">复制</button>
             </div>
             <div data-role="choice-answer" class="al-choice-answer">还没有生成答案。</div>
+          </section>
+
+          <section class="al-section" data-role="compact-code-wrap" hidden>
+            <div class="al-code-head">
+              <h3>代码速览</h3>
+              <span data-role="compact-code-copy-status" class="al-mini-status" hidden>已自动复制</span>
+            </div>
+            <pre data-role="compact-code" class="al-compact-code">还没有生成代码。</pre>
           </section>
 
           <section class="al-section">
@@ -356,8 +379,11 @@
     elements.problemDefinition = host.querySelector('[data-role="problem-definition"]');
     elements.approachWrap = host.querySelector('[data-role="approach-wrap"]');
     elements.codeWrap = host.querySelector('[data-role="code-wrap"]');
+    elements.compactCodeWrap = host.querySelector('[data-role="compact-code-wrap"]');
     elements.approach = host.querySelector('[data-role="approach"]');
     elements.code = host.querySelector('[data-role="code"]');
+    elements.compactCode = host.querySelector('[data-role="compact-code"]');
+    elements.compactCodeCopyStatus = host.querySelector('[data-role="compact-code-copy-status"]');
     elements.choiceAnswerWrap = host.querySelector('[data-role="choice-answer-wrap"]');
     elements.choiceAnswer = host.querySelector('[data-role="choice-answer"]');
     elements.promptModeChoice = host.querySelector('[data-role="prompt-mode-choice"]');
@@ -501,8 +527,9 @@
         border-radius: 999px;
         cursor: pointer;
         pointer-events: auto;
+        overflow: hidden;
         background:
-          url("${AI_STATUS_ICON_URL}") center/78% no-repeat,
+          url("${LAUNCHER_ICON_URL}") center/cover no-repeat,
           radial-gradient(circle at 30% 24%, rgba(255, 255, 255, 0.84), rgba(255, 255, 255, 0.18) 38%, transparent 39%),
           linear-gradient(180deg, #f4efe7 0%, #d7cec1 100%);
         border: 2px solid rgba(42, 36, 31, 0.14);
@@ -510,6 +537,7 @@
           0 18px 36px rgba(16, 24, 28, 0.24),
           inset 0 2px 10px rgba(255, 255, 255, 0.65);
         transition:
+          left 180ms ease,
           transform 160ms ease,
           box-shadow 160ms ease,
           opacity 160ms ease;
@@ -647,6 +675,35 @@
         color: #ffb46b;
       }
 
+      #${PANEL_ID} .al-slogan {
+        margin: 4px 0 0;
+        font-size: 11px;
+        font-style: italic;
+        color: #f7dcc0;
+        letter-spacing: 0.05em;
+      }
+
+      #${PANEL_ID} .al-header-note {
+        flex: 1 1 auto;
+        min-width: 0;
+        margin-top: 2px;
+        padding: 8px 10px;
+        border-radius: 12px;
+        border: 1px solid rgba(255, 189, 110, 0.26);
+        background: linear-gradient(135deg, rgba(255, 170, 91, 0.2) 0%, rgba(191, 79, 41, 0.16) 100%);
+      }
+
+      #${PANEL_ID} .al-header-note p {
+        margin: 0;
+        font-size: 11px;
+        line-height: 1.45;
+        color: #f7dcc0;
+      }
+
+      #${PANEL_ID} .al-header-note p + p {
+        margin-top: 2px;
+      }
+
       #${PANEL_ID} h2,
       #${PANEL_ID} h3 {
         margin: 0;
@@ -706,7 +763,8 @@
         width: 24px;
         height: 24px;
         opacity: 0.92;
-        background: url("${AI_STATUS_ICON_URL}") center/contain no-repeat;
+        border-radius: 50%;
+        background: url("${SPINNER_ICON_URL}") center/cover no-repeat;
         transform-origin: center;
       }
 
@@ -938,6 +996,39 @@
           monospace;
         color: #e8e2d8;
         background: rgba(9, 16, 20, 0.72);
+      }
+
+      #${PANEL_ID} .al-compact-code {
+        margin: 0;
+        min-height: 82px;
+        max-height: 168px;
+        overflow: hidden;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 16px;
+        padding: 12px 14px;
+        white-space: pre-wrap;
+        word-break: break-word;
+        font:
+          12px/1.55 "IBM Plex Mono",
+          "SFMono-Regular",
+          "JetBrains Mono",
+          monospace;
+        color: #efe6d9;
+        background:
+          radial-gradient(circle at top left, rgba(255, 208, 149, 0.08), transparent 42%),
+          rgba(9, 16, 20, 0.76);
+      }
+
+      #${PANEL_ID} .al-mini-status {
+        display: inline-flex;
+        align-items: center;
+        padding: 4px 10px;
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 700;
+        color: #ffe7c8;
+        background: rgba(255, 180, 107, 0.14);
+        border: 1px solid rgba(255, 180, 107, 0.18);
       }
 
       #${PANEL_ID} .al-prompt {
@@ -1236,6 +1327,18 @@
         background: rgba(255, 255, 255, 0.06);
       }
 
+      .al-bank-empty {
+        padding: 24px 12px;
+        text-align: center;
+      }
+
+      .al-bank-empty p {
+        margin: 0;
+        font-size: 13px;
+        line-height: 1.6;
+        color: #d5c4ad;
+      }
+
       .al-bank-item-title {
         margin: 0;
         font-size: 13px;
@@ -1318,6 +1421,18 @@
           max-height: calc(100vh - 108px);
         }
 
+        #${PANEL_ID} .al-header {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) auto;
+          align-items: start;
+          gap: 10px;
+        }
+
+        #${PANEL_ID} .al-header-note {
+          grid-column: 1 / -1;
+          margin-top: 0;
+        }
+
         #${PANEL_ID} .al-actions-primary,
         #${PANEL_ID} .al-actions-secondary {
           grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1380,7 +1495,8 @@
       renderGeneratedTitle("");
       renderCurrentClassification(null);
       elements.approach.textContent = "还没有生成内容。";
-      elements.code.value = "";
+      renderGeneratedCode("");
+      renderCompactCodeCopyStatus(false);
       renderChoiceAnswer("");
       await refreshPromptPreview({ silent: true });
       stopBusyStatus("题面已提取，可以直接生成答案。", "题面已识别完成。");
@@ -1401,13 +1517,12 @@
     renderPromptPreview("还没有可预览的内容。");
     renderScreenshotStatus(null);
     renderOcrText("");
+    renderCompactCodeCopyStatus(false);
     renderChoiceAnswer("");
     if (elements.approach) {
       elements.approach.textContent = "还没有生成内容。";
     }
-    if (elements.code) {
-      elements.code.value = "";
-    }
+    renderGeneratedCode("");
     if (elements.details) {
       elements.details.textContent = "还没有提取内容。";
     }
@@ -1479,7 +1594,7 @@
       renderGeneratedTitle(solveResult.generatedTitle || solveResult.summary || "");
       renderCurrentClassification(solveResult);
       elements.approach.textContent = solveResult.approach || solveResult.summary || "已拿到答案。";
-      elements.code.value = solveResult.code || "";
+      renderGeneratedCode(solveResult.code || "");
       renderChoiceAnswer(choiceAnswerText);
 
       if (!usedQuestionBank) {
@@ -1501,12 +1616,17 @@
       blurAssistantEditable();
       const copySource = mode === "choice" ? choiceAnswerText : elements.code.value;
       const copied = await copyTextToClipboard(copySource);
+      renderCompactCodeCopyStatus(mode === "code" && copied);
       const autoPickSuffix =
         autoPickResult?.ok && autoPickResult.labels.length > 0
           ? `，并自动选择 ${autoPickResult.labels.join("/")}`
           : "";
       const manualPickSuffix = autoPickResult?.manualRequired
-        ? "，检测到多选题，当前不会自动勾选"
+        ? autoPickResult?.multiChoiceUnsupported
+          ? "，检测到多选题，当前不会自动勾选"
+          : autoPickResult.labels.length > 0
+            ? `，已自动选择 ${autoPickResult.labels.join("/")}，请手动确认剩余选项`
+            : "，当前未能确认选中态，请手动检查"
         : "";
       let nextQuestionSuffix = "";
       let nextClicked = false;
@@ -1522,14 +1642,22 @@
           ? `已生成答案${autoPickSuffix}${manualPickSuffix}${nextQuestionSuffix}并自动复制，来源：${usedQuestionBank ? "本地题库" : solveResult.model || "AI"}`
           : `已生成答案${autoPickSuffix}${manualPickSuffix}${nextQuestionSuffix}，来源：${usedQuestionBank ? "本地题库" : solveResult.model || "AI"}`,
         autoPickResult?.manualRequired
-          ? "多选题请先随机作答并提交，看完解析后到“编辑题库”里修正答案；之后仍需手动勾选选项。"
+          ? autoPickResult?.multiChoiceUnsupported
+            ? "多选题当前不支持自动勾选。请先查看解析，再到“编辑题库”修正答案并手动勾选。"
+            : autoPickResult.labels.length > 0
+              ? "已尝试自动勾选部分答案，请手动确认页面上的最终选中态。"
+              : "这题没有稳定匹配到可点击选项，请手动确认；看完解析后也可以到“编辑题库”修正答案。"
           : usedQuestionBank
             ? "答案来自本地题库。"
             : "AI 已返回结果。",
       );
       showToast(
         autoPickResult?.manualRequired
-          ? `这是多选题：先随机作答并提交，再到“编辑题库”修正答案；之后也需要按答案 ${choiceAnswerText} 手动勾选。`
+          ? autoPickResult?.multiChoiceUnsupported
+            ? `这是多选题，答案是 ${choiceAnswerText}。当前请手动勾选。`
+            : autoPickResult.labels.length > 0
+              ? `已按答案 ${autoPickResult.labels.join("/")} 尝试勾选，请手动确认是否完整。`
+              : `答案是 ${choiceAnswerText}，但这页选项没有稳定匹配成功，请手动检查。`
           : "答案已经生成好了，点 AL 就能查看。",
       );
       return {
@@ -1640,9 +1768,9 @@
         }
 
         const choiceAnswerText = String(solveResult.choiceAnswerText || "").trim();
-        if (solveResult.autoPickResult?.manualRequired) {
+        if (solveResult.autoPickResult?.multiChoiceUnsupported) {
           throw new Error(
-            `第 ${state.fullAutoRound} 题是多选题。请先随机作答并提交，看完解析后到“编辑题库”修正答案；之后仍需按答案 ${choiceAnswerText} 手动勾选。`,
+            `第 ${state.fullAutoRound} 题是多选题。当前全自动只支持单选题自动勾选，请按答案 ${choiceAnswerText} 手动处理。`,
           );
         }
         if (!solveResult.autoPickResult?.ok) {
@@ -1792,17 +1920,31 @@
     }
 
     const multiChoiceMode = isMultiChoiceQuestionContext() || labels.length > 1;
+
+    // 优先尝试使用专门的多选框处理函数
     if (multiChoiceMode) {
-      return {
-        ok: false,
-        labels,
-        error: "检测到多选题，暂不支持自动勾选，请按最终答案手动选择。",
-        manualRequired: true,
-      };
+      const checkboxGroups = Array.from(document.querySelectorAll(".el-checkbox-group.checkbox-view")).filter(
+        (node) => node instanceof Element && isVisible(node) && !isInsideAssistant(node),
+      );
+      if (checkboxGroups.length > 0) {
+        const pickedFromCheckbox = await pickChoiceOptionsInElementUiCheckboxGroup(labels);
+        if (pickedFromCheckbox.length === labels.length) {
+          return {
+            ok: true,
+            labels: pickedFromCheckbox,
+            error: "",
+            manualRequired: false,
+          };
+        }
+        // 如果专门函数没有选中所有选项，继续使用通用逻辑
+      }
     }
 
     const picked = [];
     for (const label of labels) {
+      if (picked.includes(label)) {
+        continue;
+      }
       const items = collectChoiceItems();
       const item =
         items.find((candidate) => matchesChoiceItemByLabel(candidate, label)) ||
@@ -1829,10 +1971,14 @@
       }
     }
 
+    const allPicked = picked.length === labels.length;
+    const partialPicked = picked.length > 0 && !allPicked;
+
     return {
-      ok: picked.length > 0,
+      ok: allPicked,
       labels: picked,
-      error: picked.length > 0 ? "" : "没有匹配到可点击的选项。",
+      error: allPicked ? "" : partialPicked ? "只匹配到部分选项，请手动确认勾选结果。" : "没有匹配到可点击的选项。",
+      manualRequired: !allPicked,
     };
   }
 
@@ -1841,20 +1987,35 @@
       return [];
     }
 
-    const groups = Array.from(
-      document.querySelectorAll(".questionContent .el-checkbox-group.checkbox-view, .el-checkbox-group.checkbox-view"),
-    ).filter((group) => group instanceof Element && isVisible(group) && !isInsideAssistant(group));
+    const questionRoot = getActiveQuestionRoot();
+    const groupSource =
+      questionRoot instanceof Element
+        ? questionRoot.querySelectorAll(".el-checkbox-group.checkbox-view")
+        : document.querySelectorAll(".questionContent .el-checkbox-group.checkbox-view, .el-checkbox-group.checkbox-view");
+    const groups = Array.from(groupSource).filter(
+      (group) => group instanceof Element && isVisible(group) && !isInsideAssistant(group),
+    );
     if (groups.length === 0) {
       return [];
     }
 
-    const picked = [];
     const group = groups[0];
     const optionLabels = Array.from(group.querySelectorAll("label.el-checkbox"));
     if (optionLabels.length === 0) {
       return [];
     }
+    const targetSet = new Set(labels);
 
+    for (const option of optionLabels) {
+      const optionLabel = getChoiceLabelFromItem(option);
+      if (!optionLabel || targetSet.has(optionLabel) || !isChoiceItemSelected(option)) {
+        continue;
+      }
+      await ensureElementUiCheckboxLabelDeselected(option);
+      await delay(80);
+    }
+
+    const picked = [];
     for (const targetLabel of labels) {
       const option = optionLabels.find((node) => getChoiceLabelFromItem(node) === targetLabel);
       if (!option) {
@@ -1911,6 +2072,50 @@
     }
 
     return isChoiceItemSelected(option);
+  }
+
+  async function ensureElementUiCheckboxLabelDeselected(option) {
+    if (!(option instanceof Element)) {
+      return false;
+    }
+    if (!isChoiceItemSelected(option)) {
+      return true;
+    }
+
+    const clickTargets = [
+      option,
+      option.querySelector(".el-checkbox__label"),
+      option.querySelector(".el-checkbox__input"),
+      option.querySelector(".el-checkbox__inner"),
+      option.querySelector("input.el-checkbox__original"),
+    ].filter(Boolean);
+
+    for (const target of clickTargets) {
+      if (!(target instanceof Element)) {
+        continue;
+      }
+      if (!simulateDirectUserClick(target, { useNativeClick: true })) {
+        continue;
+      }
+      if (await waitForChoiceItemUnselected(option, 280)) {
+        return true;
+      }
+    }
+
+    const input = option.querySelector("input.el-checkbox__original");
+    if (input instanceof HTMLInputElement && input.checked) {
+      input.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+      input.focus?.();
+      input.click?.();
+      input.checked = false;
+      input.dispatchEvent(new Event("input", { bubbles: true, cancelable: true }));
+      input.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
+      if (await waitForChoiceItemUnselected(option, 280)) {
+        return true;
+      }
+    }
+
+    return !isChoiceItemSelected(option);
   }
 
   function isMultiChoiceQuestionContext() {
@@ -2223,6 +2428,17 @@
       await delay(30);
     }
     return isChoiceItemSelected(item);
+  }
+
+  async function waitForChoiceItemUnselected(item, timeoutMs = 200) {
+    const start = Date.now();
+    while (Date.now() - start <= timeoutMs) {
+      if (!isChoiceItemSelected(item)) {
+        return true;
+      }
+      await delay(30);
+    }
+    return !isChoiceItemSelected(item);
   }
 
   function isChoiceItemSelected(item) {
@@ -2998,9 +3214,57 @@
     if (elements.codeWrap) {
       elements.codeWrap.hidden = mode === "choice";
     }
+    if (elements.compactCodeWrap) {
+      elements.compactCodeWrap.hidden = mode !== "code";
+    }
+    if (mode !== "code") {
+      renderCompactCodeCopyStatus(false);
+    }
     if (elements.choiceAnswer) {
       elements.choiceAnswer.textContent = value || "还没有生成答案。";
     }
+  }
+
+  function renderGeneratedCode(text) {
+    const value = String(text || "");
+    if (elements.code) {
+      elements.code.value = value;
+    }
+    if (elements.compactCode) {
+      elements.compactCode.textContent = buildCompactCodePreview(value);
+    }
+  }
+
+  function renderCompactCodeCopyStatus(visible) {
+    if (!(elements.compactCodeCopyStatus instanceof HTMLElement)) {
+      return;
+    }
+
+    elements.compactCodeCopyStatus.hidden = !visible || getPromptMode() !== "code";
+  }
+
+  function buildCompactCodePreview(text) {
+    const normalized = normalizeCode(text).trim();
+    if (!normalized) {
+      return "还没有生成代码。";
+    }
+
+    const maxLines = 6;
+    const maxChars = 320;
+    const lines = normalized.split("\n");
+    let preview = lines.slice(0, maxLines).join("\n");
+    let truncated = lines.length > maxLines;
+
+    if (preview.length > maxChars) {
+      preview = preview.slice(0, maxChars).trimEnd();
+      truncated = true;
+    }
+
+    if (!truncated) {
+      return preview;
+    }
+
+    return `${preview.trimEnd()}\n...`;
   }
 
   function renderGeneratedTitle(text) {
@@ -3302,6 +3566,7 @@
       elements.promptModeCode.setAttribute("data-active", mode === "code" ? "true" : "false");
     }
     renderChoiceAnswer(mode === "choice" ? state.result?.answer || state.result?.code || "" : "");
+    renderGeneratedCode(state.result?.code || "");
     renderFullAutoButton();
   }
 
@@ -4034,10 +4299,19 @@
     const title = normalizeText(
       zhihuishuQuestion?.title || titleElement?.innerText || document.title || "未识别标题",
     );
+    const questionType = normalizeText(zhihuishuQuestion?.questionType || "");
     const statementText = normalizeText(
       zhihuishuQuestion?.statementText || statementElement?.innerText || "",
     );
     const statementHtml = zhihuishuQuestion?.statementHtml || statementElement?.innerHTML || "";
+    const choiceOptions = Array.isArray(zhihuishuQuestion?.choiceOptions)
+      ? zhihuishuQuestion.choiceOptions
+          .map((option) => ({
+            label: normalizeText(option?.label || "").slice(0, 20),
+            text: normalizeText(option?.text || "").slice(0, 1200),
+          }))
+          .filter((option) => option.label || option.text)
+      : [];
     const samples = extractSamples();
     const language = detectLanguage();
     const limits = extractLimits();
@@ -4045,8 +4319,10 @@
     return {
       url: location.href,
       title,
+      questionType,
       statementText: statementText.slice(0, 24000),
       statementHtml,
+      choiceOptions,
       currentCode: editorResult.text,
       currentCodeLineCount: editorResult.text ? editorResult.text.split("\n").length : 0,
       currentCodeSource: editorResult.source,
@@ -4068,11 +4344,7 @@
   }
 
   function extractZhihuishuQuestionBlock() {
-    const questionRoot = firstVisible([
-      ".questionContent",
-      ".ques-detail .questionContent",
-      "div[class*='questionContent']",
-    ]);
+    const questionRoot = getActiveQuestionRoot();
     if (!(questionRoot instanceof Element)) {
       return null;
     }
@@ -4085,18 +4357,8 @@
         ".questionName .centent-pre .preStyle, .questionName pre.preStyle, .questionName .preStyle, .centent-pre .preStyle",
       )?.textContent || "",
     );
-    const optionNodes = Array.from(questionRoot.querySelectorAll(".radio-view li, .checkbox-view li"));
-    const options = optionNodes
-      .map((item) => {
-        const label = normalizeText(item.querySelector(".letterSort")?.textContent || "");
-        const value = normalizeText(item.querySelector(".stem, .preStyle")?.textContent || "");
-        if (label && value) {
-          return `${label} ${value}`;
-        }
-        const wholeLine = normalizeText(item.textContent || "");
-        return wholeLine || "";
-      })
-      .filter(Boolean);
+    const choiceOptions = extractZhihuishuChoiceOptions(questionRoot);
+    const options = choiceOptions.map((option) => option.line).filter(Boolean);
 
     if (!stemText && options.length === 0) {
       return null;
@@ -4115,9 +4377,94 @@
 
     return {
       title: [typeText, stemText].filter(Boolean).join(" ").slice(0, 120),
+      questionType: typeText,
       statementText: statementParts.join("\n"),
       statementHtml: questionRoot.innerHTML || "",
+      choiceOptions: choiceOptions.map((option) => ({
+        label: option.label,
+        text: option.text,
+      })),
     };
+  }
+
+  function extractZhihuishuChoiceOptions(questionRoot) {
+    if (!(questionRoot instanceof Element)) {
+      return [];
+    }
+
+    const optionSelectors = [
+      ".radio-view li",
+      ".checkbox-view li",
+      ".checkbox-view label.el-checkbox",
+      ".radio-view label.el-radio",
+      ".checkbox-views label.el-checkbox",
+      ".radio-views label.el-radio",
+      ".el-checkbox-group.checkbox-view > label.el-checkbox",
+      ".el-radio-group.radio-view > label.el-radio",
+    ];
+    const rawNodes = Array.from(questionRoot.querySelectorAll(optionSelectors.join(", ")));
+    const nodes = [];
+    const seen = new Set();
+    for (const node of rawNodes) {
+      if (!(node instanceof Element) || !isVisible(node)) {
+        continue;
+      }
+      if (seen.has(node)) {
+        continue;
+      }
+      seen.add(node);
+      nodes.push(node);
+    }
+
+    return nodes
+      .map((node) => {
+        const label = getChoiceLabelFromItem(node) || normalizeChoiceOptionLabel(node.textContent || "");
+        let text = normalizeText(
+          node.querySelector(
+            ".stem, .preStyle, .option-text, .option-content, .el-checkbox__label .preStyle, .el-radio__label .preStyle",
+          )?.textContent || "",
+        );
+        if (!text) {
+          const wholeLine = normalizeText(node.textContent || "");
+          text = label ? normalizeText(wholeLine.replace(new RegExp(`^\\s*${label}\\s*`), "")) : wholeLine;
+        }
+        const line = [label, text].filter(Boolean).join(" ").trim();
+        if (!label && !text) {
+          return null;
+        }
+        return {
+          label,
+          text,
+          line,
+        };
+      })
+      .filter((option) => option && (option.label || option.text));
+  }
+
+  function normalizeChoiceOptionLabel(value) {
+    const text = normalizeText(value || "")
+      .replace(/\s+/g, "")
+      .toUpperCase();
+    const latinMatch = text.match(/[A-F]/);
+    if (latinMatch) {
+      return latinMatch[0];
+    }
+    if (/(对|正确|TRUE)/i.test(text)) {
+      return "对";
+    }
+    if (/(错|错误|FALSE)/i.test(text)) {
+      return "错";
+    }
+    return "";
+  }
+
+  function getActiveQuestionRoot() {
+    const questionRoot = firstVisible([
+      ".questionContent",
+      ".ques-detail .questionContent",
+      "div[class*='questionContent']",
+    ]);
+    return questionRoot instanceof Element ? questionRoot : null;
   }
 
   async function readCurrentCode() {
@@ -4231,6 +4578,7 @@
     const statementText = normalizeText(problem.statementText || "");
     const statementHead = summarizeEdgeText(statementText, "start", 48);
     const statementTail = summarizeEdgeText(statementText, "end", 36);
+    const optionCount = Array.isArray(problem.choiceOptions) ? problem.choiceOptions.length : 0;
     const screenshotText = problem.screenshotDataUrl
       ? problem.screenshotMode === "fixedRegion"
         ? "已附带固定区域截图"
@@ -4245,6 +4593,7 @@
           ${buildSummaryRow("当前代码", `${problem.currentCodeLineCount} 行`)}
           ${buildSummaryHint(buildCurrentCodeHint(problem))}
           ${buildSummaryRow("样例数量", `${problem.samples.length}`)}
+          ${buildSummaryRow("选项数量", `${optionCount}`)}
           ${buildSummaryRow("截图", screenshotText)}
         </div>
         <div class="al-summary-preview">
@@ -4492,6 +4841,7 @@
     void chrome.storage.local.get({ [POSITION_STORAGE_KEY]: null }, (items) => {
       if (chrome.runtime.lastError) {
         state.launcherPosition = getDefaultLauncherPosition();
+        snapLauncherToEdgeIfNeeded();
         syncFloatingUiPosition();
         return;
       }
@@ -4500,6 +4850,7 @@
       if (!state.launcherPosition) {
         state.launcherPosition = getDefaultLauncherPosition();
       }
+      snapLauncherToEdgeIfNeeded();
       syncFloatingUiPosition();
     });
   }
@@ -4540,6 +4891,41 @@
       left: Math.min(Math.max(8, Number(position.left) || 0), maxLeft),
       top: Math.min(Math.max(8, Number(position.top) || 0), maxTop),
     };
+  }
+
+  function snapLauncherToEdgeIfNeeded() {
+    if (!state.launcherPosition) {
+      return;
+    }
+
+    const viewportWidth = window.innerWidth;
+    const currentLeft = state.launcherPosition.left;
+    const maxLeft = Math.max(8, viewportWidth - LAUNCHER_SIZE - 8);
+    const visiblePart = 20; // 吸附后露出的部分
+
+    // 检查是否靠近左边缘
+    if (currentLeft < EDGE_SNAP_THRESHOLD) {
+      state.launcherPositionBeforeSnap = { ...state.launcherPosition };
+      state.launcherPosition.left = -(LAUNCHER_SIZE - visiblePart);
+      state.launcherSnappedEdge = 'left';
+      syncFloatingUiPosition();
+      persistLauncherPosition();
+      return;
+    }
+
+    // 检查是否靠近右边缘
+    if (currentLeft > maxLeft - EDGE_SNAP_THRESHOLD) {
+      state.launcherPositionBeforeSnap = { ...state.launcherPosition };
+      state.launcherPosition.left = viewportWidth - visiblePart;
+      state.launcherSnappedEdge = 'right';
+      syncFloatingUiPosition();
+      persistLauncherPosition();
+      return;
+    }
+
+    // 如果不在边缘附近，清除吸附状态
+    state.launcherSnappedEdge = null;
+    state.launcherPositionBeforeSnap = null;
   }
 
   function getPanelMetrics() {
@@ -4628,10 +5014,76 @@
 
   function setupLauncherDrag() {
     elements.launcher.addEventListener("pointerdown", onLauncherPointerDown);
+    elements.launcher.addEventListener("mouseenter", onLauncherMouseEnter);
+    elements.launcher.addEventListener("mouseleave", onLauncherMouseLeave);
     elements.header?.addEventListener("pointerdown", onPanelPointerDown);
     window.addEventListener("pointermove", onLauncherPointerMove);
     window.addEventListener("pointerup", onLauncherPointerUp);
     window.addEventListener("pointercancel", onLauncherPointerUp);
+  }
+
+  function onLauncherMouseEnter() {
+    if (state.launcherHoverTimer) {
+      window.clearTimeout(state.launcherHoverTimer);
+      state.launcherHoverTimer = 0;
+    }
+    
+    if (state.launcherAnimating || state.isDraggingLauncher) {
+      return;
+    }
+    
+    if (state.launcherSnappedEdge && state.launcherPosition) {
+      state.launcherAnimating = true;
+      const viewportWidth = window.innerWidth;
+      
+      // 根据吸附的边缘，将launcher滑出到完全可见的位置
+      if (state.launcherSnappedEdge === 'left') {
+        state.launcherPosition.left = 8;
+      } else if (state.launcherSnappedEdge === 'right') {
+        state.launcherPosition.left = viewportWidth - LAUNCHER_SIZE - 8;
+      }
+      
+      syncFloatingUiPosition();
+      persistLauncherPosition();
+      
+      // 等待动画完成后再允许下一次操作
+      window.setTimeout(() => {
+        state.launcherAnimating = false;
+      }, 200);
+    }
+  }
+
+  function onLauncherMouseLeave() {
+    if (state.launcherHoverTimer) {
+      window.clearTimeout(state.launcherHoverTimer);
+    }
+    
+    // 添加延迟，避免快速抖动
+    state.launcherHoverTimer = window.setTimeout(() => {
+      state.launcherHoverTimer = 0;
+      
+      // 如果之前处于吸附状态，且鼠标离开时没有在拖动，则滑回吸附位置
+      if (state.launcherSnappedEdge && state.launcherPosition && !state.isDraggingLauncher && !state.launcherAnimating) {
+        state.launcherAnimating = true;
+        const viewportWidth = window.innerWidth;
+        const visiblePart = 20;
+        
+        // 根据吸附的边缘，将launcher滑回吸附位置
+        if (state.launcherSnappedEdge === 'left') {
+          state.launcherPosition.left = -(LAUNCHER_SIZE - visiblePart);
+        } else if (state.launcherSnappedEdge === 'right') {
+          state.launcherPosition.left = viewportWidth - visiblePart;
+        }
+        
+        syncFloatingUiPosition();
+        persistLauncherPosition();
+        
+        // 等待动画完成后再允许下一次操作
+        window.setTimeout(() => {
+          state.launcherAnimating = false;
+        }, 200);
+      }
+    }, 150);
   }
 
   function onLauncherPointerDown(event) {
@@ -4709,6 +5161,7 @@
     }
 
     if (state.isDraggingLauncher) {
+      snapLauncherToEdgeIfNeeded();
       persistLauncherPosition();
     }
 
@@ -4737,6 +5190,7 @@
     if (state.panelManualPosition) {
       state.panelManualPosition = clampPanelManualPosition(state.panelManualPosition);
     }
+    snapLauncherToEdgeIfNeeded();
     syncFloatingUiPosition();
   }
 
@@ -5183,13 +5637,12 @@
     renderPromptPreview("正在等待下一题内容...");
     renderScreenshotStatus(null);
     renderOcrText("");
+    renderCompactCodeCopyStatus(false);
     renderChoiceAnswer("");
     if (elements.approach) {
       elements.approach.textContent = "正在等待下一题...";
     }
-    if (elements.code) {
-      elements.code.value = "";
-    }
+    renderGeneratedCode("");
   }
 
   async function hydrateQuestionBank() {
@@ -5222,13 +5675,20 @@
       if (!key || !value || typeof value !== "object") {
         continue;
       }
+      
+      const rawAnswer = String(value.answer || value.code || "");
+      const isChoiceAnswer = /^[A-Fa-f]+$/.test(rawAnswer) || /^(对|错|正确|错误|true|false)$/i.test(rawAnswer);
+      const promptMode = value.promptMode === "choice" || value.promptMode === "code"
+        ? value.promptMode
+        : isChoiceAnswer ? "choice" : "code";
+      
       normalized[key] = {
         key: String(value.key || key),
-        promptMode: value.promptMode === "choice" ? "choice" : "code",
+        promptMode,
         title: String(value.title || ""),
         statementPreview: String(value.statementPreview || ""),
-        answer: String(value.answer || ""),
-        code: String(value.code || ""),
+        answer: rawAnswer,
+        code: rawAnswer,
         summary: String(value.summary || ""),
         approach: String(value.approach || ""),
         generatedTitle: String(value.generatedTitle || ""),
@@ -5512,10 +5972,6 @@
   async function handleOpenQuestionBankEditor() {
     await ensureQuestionBankLoaded();
     const items = buildQuestionBankEditorItems();
-    if (items.length === 0) {
-      setStatus("题库里还没有可编辑的选择题记录。");
-      return;
-    }
     openQuestionBankReviewModal(items);
   }
 
@@ -5605,9 +6061,6 @@
     if (state.reviewModalOpen) {
       return;
     }
-    if (!Array.isArray(items) || items.length === 0) {
-      return;
-    }
 
     state.reviewModalOpen = true;
     const modal = document.createElement("div");
@@ -5618,7 +6071,7 @@
         <div class="al-bank-modal-head">
           <div>
             <h3>编辑本地题库答案</h3>
-            <p>多选题建议先随机作答并提交，看完解析后在这里把答案修正到本地题库。修正完成后，后续做题仍需要你按答案手动勾选选项。</p>
+            <p>多选题目前不支持自动勾选。看完解析后，可以在这里把答案修正到本地题库，再按答案手动勾选。</p>
           </div>
           <button type="button" class="al-bank-modal-close" data-role="bank-close" aria-label="关闭">×</button>
         </div>
@@ -5631,24 +6084,26 @@
         </div>
         <input type="file" data-role="bank-import-input" accept="application/json,.json" hidden />
         <div class="al-bank-list">
-          ${items
-            .map((item, index) => {
-              return `
-                <article class="al-bank-item">
-                  <p class="al-bank-item-title">${index + 1}. ${escapeHtml(item.title)}</p>
-                  <p class="al-bank-item-meta">${escapeHtml(item.statementPreview || "题面预览为空。")}</p>
-                  <div class="al-bank-item-answer">
-                    <label>答案</label>
-                    <input type="text" data-role="bank-answer-input" data-index="${index}" value="${escapeHtml(item.answer)}" placeholder="例如 A / AC / 对 / 错" />
-                  </div>
-                </article>
-              `;
-            })
-            .join("")}
+          ${!items || items.length === 0
+            ? `<div class="al-bank-empty"><p>题库暂无内容，使用插件答题后会自动记录，也可以通过上方导入题库。</p></div>`
+            : items
+                .map((item, index) => {
+                  return `
+                    <article class="al-bank-item">
+                      <p class="al-bank-item-title">${index + 1}. ${escapeHtml(item.title)}</p>
+                      <p class="al-bank-item-meta">${escapeHtml(item.statementPreview || "题面预览为空。")}</p>
+                      <div class="al-bank-item-answer">
+                        <label>答案</label>
+                        <input type="text" data-role="bank-answer-input" data-index="${index}" value="${escapeHtml(item.answer)}" placeholder="例如 A / AC / 对 / 错" />
+                      </div>
+                    </article>
+                  `;
+                })
+                .join("")}
         </div>
         <div class="al-bank-modal-actions">
           <button type="button" class="al-bank-modal-cancel" data-role="bank-cancel">关闭</button>
-          <button type="button" class="al-bank-modal-save" data-role="bank-save">手动保存（可选）</button>
+          ${items && items.length > 0 ? `<button type="button" class="al-bank-modal-save" data-role="bank-save">手动保存（可选）</button>` : ""}
         </div>
       </div>
     `;
@@ -5810,14 +6265,26 @@
 
     const exportQuestionBank = async () => {
       await ensureQuestionBankLoaded();
+      const rawBank = state.questionBank || {};
+      const simplifiedBank = {};
+      
+      for (const [key, entry] of Object.entries(rawBank)) {
+        if (!entry) continue;
+        simplifiedBank[key] = {
+          title: entry.title || "",
+          statementPreview: entry.statementPreview || "",
+          answer: entry.answer || entry.code || "",
+        };
+      }
+      
       const payload = {
         exportedAt: new Date().toISOString(),
         version: 1,
-        questionBank: state.questionBank || {},
+        questionBank: simplifiedBank,
       };
       const exportedAt = new Date().toISOString().slice(0, 10);
       downloadTextFile(
-        `autolearning-question-bank-${exportedAt}.json`,
+        `zhituo-question-bank-${exportedAt}.json`,
         JSON.stringify(payload, null, 2),
         "application/json;charset=utf-8",
       );

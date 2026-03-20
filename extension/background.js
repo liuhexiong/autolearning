@@ -13,8 +13,8 @@ const DEFAULT_SETTINGS = {
   imageBaseUrl: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
   imageApiKey: "sk-9101f75ca6b24400953e03ba4cc283a5",
   imageModel: "qwen3.5-flash",
-  promptMode: "code",
-  extraInstructions: DEFAULT_CODE_PROMPT,
+  promptMode: "choice",
+  extraInstructions: DEFAULT_CHOICE_PROMPT,
   extraInstructionsChoice: DEFAULT_CHOICE_PROMPT,
   extraInstructionsCode: DEFAULT_CODE_PROMPT,
   temperature: 0.2,
@@ -186,6 +186,17 @@ function buildSolverPrompt(problem, extraInstructions, promptMode = "code") {
   const currentCode = String(problem?.currentCode || "").trim();
   const currentCodeBlock = currentCode ? currentCode : "[当前编辑器为空]";
   const mode = getPromptMode({ promptMode });
+  const choiceOptionText =
+    Array.isArray(problem?.choiceOptions) && problem.choiceOptions.length > 0
+      ? problem.choiceOptions
+          .map((option) => {
+            const label = String(option?.label || "").trim();
+            const text = String(option?.text || "").trim();
+            return [label, text].filter(Boolean).join(" ");
+          })
+          .filter(Boolean)
+          .join("\n")
+      : "";
 
   if (mode === "choice") {
     return [
@@ -196,10 +207,12 @@ function buildSolverPrompt(problem, extraInstructions, promptMode = "code") {
       extraInstructions ? `额外要求：${extraInstructions}` : "",
       "",
       `标题：${problem?.title || "未识别标题"}`,
+      problem?.questionType ? `题型：${problem.questionType}` : "",
       "",
       "题面：",
       problem?.statementText || "[未提取到题面]",
       "",
+      choiceOptionText ? ["结构化选项：", choiceOptionText, ""].join("\n") : "",
       problem?.ocrText
         ? ["题面 OCR：", problem.ocrText, ""].join("\n")
         : "",
@@ -382,7 +395,7 @@ function buildSolverMessages(problem, extraInstructions, includeScreenshotInSolv
       content:
         mode === "choice"
           ? "你是一个只做题目判定的助手。输出必须是 JSON。"
-          : "你是耐心、严谨的算法学习助手。你要优先依据题面与样例理解任务，谨慎处理可能串题的标题、代码模板和页面杂质。输出必须是 JSON，并且 code 字段里只放最终可复制内容。",
+          : "你是耐心、严谨的智拓算法助手。你要优先依据题面与样例理解任务，谨慎处理可能串题的标题、代码模板和页面杂质。输出必须是 JSON，并且 code 字段里只放最终可复制内容。",
     },
     {
       role: "user",
