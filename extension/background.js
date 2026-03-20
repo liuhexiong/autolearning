@@ -2,6 +2,7 @@ const DEFAULT_CHOICE_PROMPT =
   "当前页面大概率是选择题、判断题、概念题或简答型理论题。请优先输出最终答案，而不是写完整程序。若题目是单选题，code 字段只放最终选项，例如 A、B、C、D；若是多选题，code 字段只放选项组合，例如 AC；若是判断题，code 字段只放“对”或“错”；若是简短填空或概念问答，code 字段只放最终可直接填写的简短答案。不要输出 main 函数，不要伪造代码。approach 用 3 到 5 句简洁说明你的判断依据，重点使用关键词匹配、概念定义和排除法。";
 const DEFAULT_CODE_PROMPT =
   "当前页面大概率是编程题、代码填空题或需要补全模板的题。请优先保留题目指定语言、函数签名、输入输出格式和已有代码骨架，只补上真正缺失的部分。若页面自带代码与题面冲突，优先相信题面和样例。code 字段只放最终可提交或可复制的内容，不要在 code 里混入解释。尽量给出最稳妥、最容易通过样例和评测的做法。";
+const QUESTION_BANK_CATEGORIES = ["educoder", "zhihuishu", "leetcode", "general"];
 
 const DEFAULT_SETTINGS = {
   baseUrl: "https://api.deepseek.com/v1",
@@ -32,6 +33,11 @@ const DEFAULT_SETTINGS = {
   ocrPrompt:
     "请只做 OCR，尽量完整提取图片中的中文、英文、公式、选项和输入输出要求。不要解释，不要总结，只返回纯文本。",
   historyLimit: 50,
+  cloudRepoOwner: "autolearing",
+  cloudRepoName: "question-bank",
+  cloudRepoBranch: "main",
+  cloudGithubToken: "",
+  cloudAutoSync: false,
 };
 const HISTORY_STORAGE_KEY = "autolearningSolveHistory";
 const MIN_HISTORY_ITEMS = 10;
@@ -84,6 +90,20 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "autolearning:get-history") {
     getSolveHistory()
       .then((history) => sendResponse({ ok: true, history }))
+      .catch((error) => sendResponse({ ok: false, error: formatError(error) }));
+    return true;
+  }
+
+  if (message?.type === "autolearning:cloud-sync") {
+    syncCloudQuestionBank()
+      .then((cloudBank) => sendResponse({ ok: true, cloudBank }))
+      .catch((error) => sendResponse({ ok: false, error: formatError(error) }));
+    return true;
+  }
+
+  if (message?.type === "autolearning:submit-contribution") {
+    submitContribution(message.category, message.entries)
+      .then((result) => sendResponse({ ok: true, result }))
       .catch((error) => sendResponse({ ok: false, error: formatError(error) }));
     return true;
   }
@@ -353,6 +373,140 @@ async function solveProblem(problem, extraInstructionsOverride, externalControll
   } finally {
     clearTimeout(timeout);
   }
+}
+
+async function syncCloudQuestionBank() {
+  const settings = await storageGet(DEFAULT_SETTINGS);
+  const owner = String(settings.cloudRepoOwner || "").trim();
+  const repo = String(settings.cloudRepoName || "").trim();
+  const branch = String(settings.cloudRepoBranch || "main").trim() || "main";
+  if (!owner || !repo) {
+    throw new Error("请先在设置页填写云端仓库所有者和仓库名。");
+  }
+
+  const cloudBank = [];
+
+  for (const category of QUESTION_BANK_CATEGORIES) {
+    const categoryPayload = await fetchGitHubCategory(owner, repo, branch, category);
+    cloudBank.push({
+      category,
+      questions: Array.isArray(categoryPayload?.questions) ? categoryPayload.questions : [],
+    });
+  }
+
+  return cloudBank;
+}
+
+async function submitContribution(category, entries) {
+  const normalizedCategory = String(category || "").trim();
+  const normalizedEntries = Array.isArray(entries) ? entries : [];
+  if (!normalizedCategory) {
+    throw new Error("请选择贡献分类。");
+  }
+  if (normalizedEntries.length === 0) {
+    throw new Error("请先选择要贡献的题目。");
+  }
+  const settings = await storageGet(DEFAULT_SETTINGS);
+  const owner = String(settings.cloudRepoOwner || "").trim();
+  const repo = String(settings.cloudRepoName || "").trim();
+  const branch = String(settings.cloudRepoBranch || "main").trim() || "main";
+  const token = String(settings.cloudGithubToken || "").trim();
+  if (!owner || !repo) {
+    throw new Error("请先在设置页填写云端仓库所有者和仓库名。");
+  }
+  if (!token) {
+    throw new Error("请先在设置页填写 GitHub Token，再贡献题目。");
+  }
+
+  const issueTitle = `题库贡献: ${normalizedCategory} ${new Date().toISOString().slice(0, 10)}`;
+  const issueBody = [
+    "这是一批由插件自动整理的题库贡献，请维护者审核后手动合并到 JSON 题库。",
+    "",
+    `分类：${normalizedCategory}`,
+    `数量：${normalizedEntries.length}`,
+    `分支：${branch}`,
+    "",
+    "```json",
+    JSON.stringify(
+      {
+        version: 1,
+        category: normalizedCategory,
+        questions: normalizedEntries.map((entry) => ({
+          stem: String(entry?.stem || "").trim(),
+          answer: String(entry?.answer || "").trim(),
+          source: entry?.sourceMeta?.site || "local-contribution",
+        })),
+      },
+      null,
+      2,
+    ),
+    "```",
+  ].join("\n");
+
+  const payload = await postGitHubIssue(owner, repo, token, {
+    title: issueTitle,
+    body: issueBody,
+  });
+
+  return {
+    acceptedCount: normalizedEntries.length,
+    duplicateCount: 0,
+    pendingReviewIds: [String(payload?.number || payload?.id || "")].filter(Boolean),
+    results: normalizedEntries.map((entry) => ({
+      clientEntryId: String(entry?.clientEntryId || "").trim(),
+      status: "submitted",
+      issueNumber: Number(payload?.number || 0),
+    })),
+  };
+}
+
+async function fetchGitHubCategory(owner, repo, branch, category) {
+  const url =
+    `https://raw.githubusercontent.com/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/` +
+    `${encodeURIComponent(branch)}/${encodeURIComponent(category)}.json`;
+  const response = await fetch(url, {
+    headers: {
+      Accept: "application/json",
+    },
+  });
+  if (response.status === 404) {
+    return { version: 1, name: category, questions: [] };
+  }
+  const rawText = await response.text();
+  let payload = {};
+  try {
+    payload = rawText ? JSON.parse(rawText) : {};
+  } catch {
+    payload = {};
+  }
+  if (!response.ok) {
+    throw new Error(payload?.message || rawText || `读取云端题库失败，状态码 ${response.status}`);
+  }
+  return payload;
+}
+
+async function postGitHubIssue(owner, repo, token, body) {
+  const response = await fetch(`https://api.github.com/repos/${owner}/${repo}/issues`, {
+    method: "POST",
+    headers: {
+      Accept: "application/vnd.github+json",
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+      "X-GitHub-Api-Version": "2022-11-28",
+    },
+    body: JSON.stringify(body),
+  });
+  const rawText = await response.text();
+  let payload = {};
+  try {
+    payload = rawText ? JSON.parse(rawText) : {};
+  } catch {
+    payload = {};
+  }
+  if (!response.ok) {
+    throw new Error(payload?.message || rawText || `创建 GitHub Issue 失败，状态码 ${response.status}`);
+  }
+  return payload;
 }
 
 async function buildPromptPreview(problem, extraInstructionsOverride) {

@@ -33,6 +33,11 @@ const DEFAULT_SETTINGS = {
   ocrPrompt:
     "请只做 OCR，尽量完整提取图片中的中文、英文、公式、选项和输入输出要求。不要解释，不要总结，只返回纯文本。",
   historyLimit: 50,
+  cloudRepoOwner: "autolearing",
+  cloudRepoName: "question-bank",
+  cloudRepoBranch: "main",
+  cloudGithubToken: "",
+  cloudAutoSync: false,
 };
 
 const form = document.getElementById("settings-form");
@@ -40,6 +45,7 @@ const statusNode = document.getElementById("status");
 const resetButton = document.getElementById("reset");
 const restoreChoicePromptButton = document.getElementById("restoreChoicePrompt");
 const restoreCodePromptButton = document.getElementById("restoreCodePrompt");
+const authSessionSummaryNode = document.getElementById("authSessionSummary");
 
 void hydrateForm();
 
@@ -78,6 +84,11 @@ form.addEventListener("submit", async (event) => {
     ocrPrompt: document.getElementById("ocrPrompt").value.trim(),
     extraInstructions: document.getElementById("extraInstructionsCode").value.trim(),
     historyLimit: normalizeHistoryLimitInput(document.getElementById("historyLimit").value),
+    cloudRepoOwner: document.getElementById("cloudRepoOwner").value.trim(),
+    cloudRepoName: document.getElementById("cloudRepoName").value.trim(),
+    cloudRepoBranch: document.getElementById("cloudRepoBranch").value.trim(),
+    cloudGithubToken: document.getElementById("cloudGithubToken").value.trim(),
+    cloudAutoSync: document.getElementById("cloudAutoSync").checked,
     temperature: DEFAULT_SETTINGS.temperature,
   };
 
@@ -149,6 +160,12 @@ async function hydrateForm() {
   document.getElementById("historyLimit").value = String(
     normalizeHistoryLimitInput(values.historyLimit),
   );
+  document.getElementById("cloudRepoOwner").value = values.cloudRepoOwner || DEFAULT_SETTINGS.cloudRepoOwner;
+  document.getElementById("cloudRepoName").value = values.cloudRepoName || DEFAULT_SETTINGS.cloudRepoName;
+  document.getElementById("cloudRepoBranch").value = values.cloudRepoBranch || DEFAULT_SETTINGS.cloudRepoBranch;
+  document.getElementById("cloudGithubToken").value = values.cloudGithubToken || "";
+  document.getElementById("cloudAutoSync").checked = Boolean(values.cloudAutoSync);
+  renderAuthSessionSummary(values);
 }
 
 function storageGet(defaults) {
@@ -177,6 +194,20 @@ function storageSet(values) {
 
 function setStatus(text) {
   statusNode.textContent = text;
+}
+
+function renderAuthSessionSummary(values) {
+  if (!authSessionSummaryNode) {
+    return;
+  }
+  const owner = String(values?.cloudRepoOwner || "").trim();
+  const repo = String(values?.cloudRepoName || "").trim();
+  const branch = String(values?.cloudRepoBranch || "").trim();
+  if (!owner || !repo) {
+    authSessionSummaryNode.textContent = "还没有配置云端仓库。";
+    return;
+  }
+  authSessionSummaryNode.textContent = `${owner}/${repo}${branch ? `@${branch}` : ""}`;
 }
 
 function normalizeHistoryLimitInput(value) {

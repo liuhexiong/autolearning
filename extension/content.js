@@ -18,7 +18,15 @@
   const HOST_ID = "autolearning-host";
   const POSITION_STORAGE_KEY = "autolearningLauncherPosition";
   const FIXED_CAPTURE_STORAGE_KEY = "autolearningFixedCaptureRegions";
+  const CUSTOM_EXTRACT_STORAGE_KEY = "autolearningCustomExtractRules";
   const QUESTION_BANK_STORAGE_KEY = "autolearningQuestionBankV1";
+  const QUESTION_BANK_CATEGORY_DEFS = [
+    { key: "educoder", label: "Educoder" },
+    { key: "zhihuishu", label: "智慧树" },
+    { key: "leetcode", label: "LeetCode" },
+    { key: "general", label: "通用" },
+  ];
+  const QUESTION_BANK_CATEGORIES = QUESTION_BANK_CATEGORY_DEFS.map((item) => item.key);
   const LAUNCHER_SIZE = 62;
   const PANEL_GAP = 12;
   const PANEL_MAX_WIDTH = 420;
@@ -71,10 +79,12 @@
     screenshotShortcutInstalled: false,
     frameShortcutBridgeInstalled: false,
     fixedCaptureRegion: null,
+    customStatementRule: null,
     questionBank: {},
     questionBankLoaded: false,
     questionBankReviewQueue: [],
     reviewModalOpen: false,
+    cloudSyncStarted: false,
     settings: {
       promptMode: "choice",
       extraInstructionsChoice: DEFAULT_CHOICE_PROMPT,
@@ -88,6 +98,11 @@
       fullAutoNextDelayMs: 1500,
       autoPickNextDelayMs: 600,
       fullAutoMode: "extract",
+      cloudRepoOwner: "autolearing",
+      cloudRepoName: "question-bank",
+      cloudRepoBranch: "main",
+      cloudGithubToken: "",
+      cloudAutoSync: false,
     },
   };
 
@@ -108,6 +123,7 @@
     installScreenshotShortcut();
     installFrameShortcutBridge();
     void hydrateFixedCaptureRegion();
+    void hydrateCustomStatementRule();
     void hydrateQuestionBank();
     renderSummary("插件已在当前页面就绪。你可以直接截图、读剪贴板，或先识别当前页面内容。");
     renderGeneratedTitle("");
@@ -117,6 +133,7 @@
     renderOcrText("");
     renderGeneratedCode("");
     renderCompactCodeCopyStatus(false);
+    renderPlatformSummary();
     syncPromptModeUi();
     renderHistory([]);
     setStatus("插件已在当前网站启用。");
@@ -139,6 +156,8 @@
         renderOcrText("");
         state.fixedCaptureRegion = null;
         void hydrateFixedCaptureRegion();
+        state.customStatementRule = null;
+        void hydrateCustomStatementRule();
       }
       bootstrap();
     });
@@ -164,6 +183,8 @@
         renderOcrText("");
         state.fixedCaptureRegion = null;
         void hydrateFixedCaptureRegion();
+        state.customStatementRule = null;
+        void hydrateCustomStatementRule();
       }
       bootstrap();
     }, 1200);
@@ -211,6 +232,16 @@
             <button data-role="full-auto" type="button">开启全自动</button>
             <button data-role="edit-question-bank" type="button">编辑题库</button>
           </div>
+
+          <section class="al-section">
+            <div class="al-code-head">
+              <h3>云端题库</h3>
+            </div>
+            <div class="al-actions al-actions-secondary">
+              <button data-role="cloud-sync" type="button">同步云端</button>
+            </div>
+            <div class="al-summary" data-role="platform-summary">云端题库会从 GitHub 下载到本地缓存使用，贡献只会从“我的题库”里选择。</div>
+          </section>
 
           <section class="al-section" data-role="choice-answer-wrap" hidden>
             <div class="al-code-head">
@@ -260,9 +291,17 @@
             <div class="al-actions al-actions-secondary">
               <button data-role="capture" type="button">框选截图</button>
               <button data-role="define-capture-region" type="button">设定区域</button>
+              <button data-role="pick-statement-element" type="button">选取题面元素</button>
               <button data-role="paste-code" type="button">读取剪贴板代码</button>
               <button data-role="settings" type="button">设置</button>
             </div>
+            <section class="al-section">
+              <div class="al-code-head">
+                <h3>自定义题面</h3>
+                <button data-role="clear-custom-statement-rule" type="button" class="al-link-button">清除规则</button>
+              </div>
+              <div data-role="custom-statement-rule-status" class="al-summary">当前页面还没有自定义题面规则。</div>
+            </section>
             <section class="al-section">
               <div class="al-code-head">
                 <h3>全自动模式</h3>
@@ -394,9 +433,12 @@
     elements.details = host.querySelector('[data-role="details"]');
     elements.promptPreview = host.querySelector('[data-role="prompt-preview"]');
     elements.screenshotStatus = host.querySelector('[data-role="screenshot-status"]');
+    elements.customStatementRuleStatus = host.querySelector('[data-role="custom-statement-rule-status"]');
     elements.clearScreenshotBuffer = host.querySelector('[data-role="clear-screenshot-buffer"]');
     elements.shortcutTip = host.querySelector('[data-role="shortcut-tip"]');
     elements.fullAutoButton = host.querySelector('[data-role="full-auto"]');
+    elements.platformSummary = host.querySelector('[data-role="platform-summary"]');
+    elements.cloudSync = host.querySelector('[data-role="cloud-sync"]');
     elements.header = host.querySelector(".al-header");
     elements.ocrText = host.querySelector('[data-role="ocr-text"]');
     elements.historyList = host.querySelector('[data-role="history-list"]');
@@ -412,11 +454,17 @@
     host.querySelector('[data-role="solve"]').addEventListener("click", () => {
       void handleSolve();
     });
+    elements.cloudSync?.addEventListener("click", () => {
+      void handleCloudSync();
+    });
     host.querySelector('[data-role="capture"]').addEventListener("click", () => {
       void handleCaptureScreenshot();
     });
     host.querySelector('[data-role="define-capture-region"]').addEventListener("click", () => {
       void handleDefineFixedCaptureRegion();
+    });
+    host.querySelector('[data-role="pick-statement-element"]').addEventListener("click", () => {
+      void handlePickCustomStatementElement();
     });
     host.querySelector('[data-role="full-auto"]').addEventListener("click", () => {
       void handleToggleFullAuto();
@@ -477,6 +525,9 @@
     });
     host.querySelector('[data-role="clear-screenshot-buffer"]').addEventListener("click", () => {
       void handleClearScreenshotBuffer();
+    });
+    host.querySelector('[data-role="clear-custom-statement-rule"]').addEventListener("click", () => {
+      void handleClearCustomStatementRule();
     });
 
     initFloatingPosition();
@@ -951,6 +1002,12 @@
         border: 1px solid rgba(255, 180, 107, 0.16);
       }
 
+      #${PANEL_ID} .al-summary-hint[data-variant="warning"] {
+        color: #ffe4c4;
+        background: rgba(208, 75, 53, 0.12);
+        border-color: rgba(208, 75, 53, 0.26);
+      }
+
       #${PANEL_ID} .al-code-head {
         display: flex;
         align-items: center;
@@ -1283,6 +1340,20 @@
         cursor: pointer;
       }
 
+      .al-bank-modal-tool-buttons button[data-active="true"] {
+        color: #20140e;
+        background: linear-gradient(135deg, #ffb56a 0%, #f08a3a 100%);
+      }
+
+      .al-bank-modal-tool-buttons select {
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        border-radius: 10px;
+        padding: 8px 10px;
+        font-size: 12px;
+        color: #fff3df;
+        background: rgba(8, 14, 18, 0.72);
+      }
+
       .al-bank-save-indicator {
         min-height: 20px;
         padding: 3px 10px;
@@ -1325,6 +1396,14 @@
         padding: 12px;
         border-radius: 14px;
         background: rgba(255, 255, 255, 0.06);
+      }
+
+      .al-bank-item-pick {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+        color: #ffcf9a;
       }
 
       .al-bank-empty {
@@ -1482,7 +1561,27 @@
 
   async function handleExtract() {
     openPanel();
-    startBusyStatus("正在识别题面和当前代码...", "正在读取页面上的题面、选项和代码内容。");
+
+    const activeCustomRule = getUsableCustomStatementRule();
+    if (!activeCustomRule) {
+      const hasSavedRule = Boolean(state.customStatementRule);
+      if (hasSavedRule) {
+        setStatus("当前页面保存过题面规则，但这条规则现在没有命中，正在重新选取。", {
+          hint: "请重新点击要作为题面的元素，保存后会自动继续提取。",
+        });
+      } else {
+        setStatus("当前页面还没有题面规则，请先点击要作为题面的元素。", {
+          hint: "第一次配置后，后续点“提取题面”会直接复用。",
+        });
+      }
+      await handlePickCustomStatementElement({
+        autoExtractAfterSave: true,
+        skipOpenPanel: true,
+      });
+      return;
+    }
+
+    startBusyStatus("正在识别题面和当前代码...", "正在优先按已保存的题面规则读取页面内容。");
 
     try {
       const problem = await extractProblem();
@@ -1499,9 +1598,90 @@
       renderCompactCodeCopyStatus(false);
       renderChoiceAnswer("");
       await refreshPromptPreview({ silent: true });
-      stopBusyStatus("题面已提取，可以直接生成答案。", "题面已识别完成。");
+      await upsertQuestionBankDraftEntry(problem, getPromptMode());
+      const successMessage =
+        problem.statementSource === "custom"
+          ? "已按当前页面的自定义题面规则提取内容。"
+          : "题面已提取，可以直接生成答案。";
+      const successHint =
+        problem.customRuleRequested && !problem.customRuleMatched
+          ? "当前页面自定义题面规则未命中，已自动回退到内置提取逻辑。"
+          : "题面已识别完成。";
+      stopBusyStatus(successMessage, successHint);
     } catch (error) {
       stopBusyStatus(error instanceof Error ? error.message : String(error), "提取失败，请检查当前页面。");
+    }
+  }
+
+  async function handlePickCustomStatementElement(options = {}) {
+    const autoExtractAfterSave = Boolean(options.autoExtractAfterSave);
+    const skipOpenPanel = Boolean(options.skipOpenPanel);
+    if (!skipOpenPanel) {
+      openPanel();
+    }
+    setStatus("请在页面上点击要作为题面的元素，按 Esc 可以取消。", {
+      hint: "移动鼠标时会高亮当前候选元素。",
+    });
+
+    try {
+      const target = await selectCustomStatementElement();
+      if (!(target instanceof Element)) {
+        setStatus("已取消自定义题面选择。");
+        return;
+      }
+
+      const previewText = summarizePreviewText(target.innerText || target.textContent || "");
+      const selectorCandidates = buildCustomSelectorCandidates(target);
+      if (selectorCandidates.length === 0) {
+        setStatus("没有生成出可用的题面定位规则，请换一个更具体的元素重试。");
+        return;
+      }
+
+      const confirmed = window.confirm(
+        `将当前元素保存为本页题面规则？\n\n预览：\n${previewText || "[当前元素几乎没有文本内容]"}\n\n保存后，插件提取题面时会优先使用这个元素。`,
+      );
+      if (!confirmed) {
+        setStatus("已取消保存自定义题面规则。");
+        return;
+      }
+
+      const rule = {
+        scopeKey: getCustomExtractScopeKey(),
+        selectorCandidates,
+        textPreview: previewText,
+        pickedTag: target.tagName.toLowerCase(),
+        pickedPreview: previewText,
+        savedAt: new Date().toISOString(),
+      };
+      await persistCustomStatementRule(rule);
+      state.customStatementRule = normalizeCustomStatementRule(rule);
+      renderCustomStatementRuleStatus();
+      if (autoExtractAfterSave) {
+        setStatus("当前页面的自定义题面规则已保存，正在继续提取。", {
+          hint: "后续点击“提取题面”会直接复用这条规则。",
+        });
+        await handleExtract();
+        return;
+      }
+      setStatus("当前页面的自定义题面规则已保存。");
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function handleClearCustomStatementRule() {
+    if (!state.customStatementRule) {
+      setStatus("当前页面没有可清除的自定义题面规则。");
+      return;
+    }
+
+    try {
+      await removeCustomStatementRule();
+      state.customStatementRule = null;
+      renderCustomStatementRuleStatus();
+      setStatus("当前页面的自定义题面规则已清除。");
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -2953,8 +3133,13 @@
     try {
       const settings = await getCurrentSettings();
       applySettings(settings);
+      renderPlatformSummary();
       await refreshPromptPreview({ silent: true });
       await refreshHistory({ silent: true });
+      if (state.settings.cloudAutoSync && !state.cloudSyncStarted) {
+        state.cloudSyncStarted = true;
+        void handleCloudSync({ silent: true });
+      }
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
     }
@@ -2996,10 +3181,16 @@
       fullAutoNextDelayMs: normalizeFullAutoDelay(
         settings?.fullAutoNextDelayMs ?? state.settings.fullAutoNextDelayMs,
       ),
+      cloudRepoOwner: String(settings?.cloudRepoOwner || state.settings.cloudRepoOwner || "").trim(),
+      cloudRepoName: String(settings?.cloudRepoName || state.settings.cloudRepoName || "").trim(),
+      cloudRepoBranch: String(settings?.cloudRepoBranch || state.settings.cloudRepoBranch || "").trim(),
+      cloudGithubToken: String(settings?.cloudGithubToken || state.settings.cloudGithubToken || "").trim(),
+      cloudAutoSync: Boolean(settings?.cloudAutoSync),
     };
     renderShortcutTip();
     syncPromptModeUi();
     syncFullAutoModeUi();
+    renderPlatformSummary();
   }
 
   function handleStorageChanged(changes, areaName) {
@@ -3050,6 +3241,24 @@
     }
     if (changes.fullAutoNextDelayMs) {
       nextSettings.fullAutoNextDelayMs = normalizeFullAutoDelay(changes.fullAutoNextDelayMs.newValue);
+    }
+    if (changes.cloudRepoOwner) {
+      nextSettings.cloudRepoOwner = String(changes.cloudRepoOwner.newValue || "").trim();
+    }
+    if (changes.cloudRepoName) {
+      nextSettings.cloudRepoName = String(changes.cloudRepoName.newValue || "").trim();
+    }
+    if (changes.cloudRepoBranch) {
+      nextSettings.cloudRepoBranch = String(changes.cloudRepoBranch.newValue || "").trim();
+    }
+    if (changes.cloudGithubToken) {
+      nextSettings.cloudGithubToken = String(changes.cloudGithubToken.newValue || "").trim();
+    }
+    if (changes.cloudAutoSync) {
+      nextSettings.cloudAutoSync = Boolean(changes.cloudAutoSync.newValue);
+    }
+    if (changes[CUSTOM_EXTRACT_STORAGE_KEY]) {
+      void hydrateCustomStatementRule();
     }
 
     if (Object.keys(nextSettings).length === 0) {
@@ -3393,6 +3602,86 @@
         `框选 ${state.settings.screenshotShortcut} / 固定区 ${state.settings.fullPageScreenshotShortcut} / 全自动 ${state.settings.fullAutoShortcut}${
           state.fixedCaptureRegion ? " 已设定" : " 未设定"
         }`;
+    }
+  }
+
+  function renderPlatformSummary() {
+    if (!elements.platformSummary) {
+      return;
+    }
+    const owner = String(state.settings.cloudRepoOwner || "").trim();
+    const repo = String(state.settings.cloudRepoName || "").trim();
+    const branch = String(state.settings.cloudRepoBranch || "").trim() || "main";
+    if (!owner || !repo) {
+      elements.platformSummary.textContent = "还没有配置云端仓库；配置后可从 GitHub 同步公共题库到本地。";
+      return;
+    }
+    elements.platformSummary.textContent = `当前云端仓库：${owner}/${repo}@${branch}。云端题库只做下载分发，贡献只从“我的题库”里选择。`;
+  }
+
+  async function handleCloudSync(options = {}) {
+    const silent = Boolean(options.silent);
+    try {
+      const response = await sendMessage({ type: "autolearning:cloud-sync" });
+      if (!response?.ok) {
+        throw new Error(response?.error || "同步云端题库失败");
+      }
+      const importedCount = mergeCloudQuestionBank(response.cloudBank);
+      if (importedCount > 0) {
+        await persistQuestionBank();
+      }
+      if (!silent) {
+        setStatus(`云端题库同步完成，共合并 ${importedCount} 条记录。`);
+        showToast(`云端题库已同步 ${importedCount} 条。`);
+      }
+    } catch (error) {
+      if (!silent) {
+        setStatus(error instanceof Error ? error.message : String(error));
+      }
+    }
+  }
+
+  function renderCustomStatementRuleStatus() {
+    if (!elements.customStatementRuleStatus) {
+      return;
+    }
+
+    const rule = state.customStatementRule;
+    if (!rule) {
+      elements.customStatementRuleStatus.textContent = "当前页面还没有自定义题面规则。";
+      return;
+    }
+
+    const resolved = resolveCustomStatementElement(rule);
+    const preview = summarizeEdgeText(rule.textPreview || "", "start", 80);
+    const savedAt = formatDateTime(rule.savedAt);
+    const matchedSelector = resolved?.selector || "";
+    renderCustomStatementRuleStatusHtml(`
+      <div class="al-summary-card">
+        <div class="al-summary-grid">
+          ${buildSummaryRow("状态", resolved ? "已保存，可用" : "已保存，当前未命中")}
+          ${buildSummaryRow("保存时间", savedAt || "未知")}
+          ${rule.pickedTag ? buildSummaryRow("保存节点", rule.pickedTag) : ""}
+          ${buildSummaryRow("候选规则", `${Array.isArray(rule.selectorCandidates) ? rule.selectorCandidates.length : 0} 条`)}
+          ${matchedSelector ? buildSummaryRow("当前命中", matchedSelector) : ""}
+          ${buildSummaryHint(
+            resolved
+              ? "提取题面时会优先使用这条自定义规则。"
+              : "当前页面没有命中这条规则；提取时会自动回退到内置选择器。",
+            resolved ? "default" : "warning",
+          )}
+        </div>
+        <div class="al-summary-preview-card">
+          <div class="al-summary-preview-label">保存时预览</div>
+          <div class="al-summary-preview-text">${escapeHtml(preview || "无预览文本")}</div>
+        </div>
+      </div>
+    `);
+  }
+
+  function renderCustomStatementRuleStatusHtml(html) {
+    if (elements.customStatementRuleStatus) {
+      elements.customStatementRuleStatus.innerHTML = html;
     }
   }
 
@@ -3913,6 +4202,55 @@
     return `${location.origin}${location.pathname}`;
   }
 
+  async function hydrateCustomStatementRule() {
+    try {
+      const items = await storageGet({
+        [CUSTOM_EXTRACT_STORAGE_KEY]: {},
+      });
+      const rules = items?.[CUSTOM_EXTRACT_STORAGE_KEY];
+      state.customStatementRule = normalizeCustomStatementRule(rules?.[getCustomExtractScopeKey()] || null);
+      renderCustomStatementRuleStatus();
+    } catch {
+      state.customStatementRule = null;
+      renderCustomStatementRuleStatus();
+    }
+  }
+
+  async function persistCustomStatementRule(rule) {
+    const items = await storageGet({
+      [CUSTOM_EXTRACT_STORAGE_KEY]: {},
+    });
+    const rules =
+      items?.[CUSTOM_EXTRACT_STORAGE_KEY] && typeof items[CUSTOM_EXTRACT_STORAGE_KEY] === "object"
+        ? items[CUSTOM_EXTRACT_STORAGE_KEY]
+        : {};
+    const nextRules = {
+      ...rules,
+      [getCustomExtractScopeKey()]: normalizeCustomStatementRule(rule),
+    };
+    await storageSet({
+      [CUSTOM_EXTRACT_STORAGE_KEY]: nextRules,
+    });
+  }
+
+  async function removeCustomStatementRule() {
+    const items = await storageGet({
+      [CUSTOM_EXTRACT_STORAGE_KEY]: {},
+    });
+    const rules =
+      items?.[CUSTOM_EXTRACT_STORAGE_KEY] && typeof items[CUSTOM_EXTRACT_STORAGE_KEY] === "object"
+        ? { ...items[CUSTOM_EXTRACT_STORAGE_KEY] }
+        : {};
+    delete rules[getCustomExtractScopeKey()];
+    await storageSet({
+      [CUSTOM_EXTRACT_STORAGE_KEY]: rules,
+    });
+  }
+
+  function getCustomExtractScopeKey() {
+    return `${location.origin}${location.pathname}`;
+  }
+
   function rectToStoredCaptureRegion(rect) {
     return normalizeStoredCaptureRegion({
       leftRatio: rect.left / Math.max(window.innerWidth, 1),
@@ -4276,6 +4614,7 @@
   async function extractProblem() {
     const editorResult = await readCurrentCode();
     const zhihuishuQuestion = extractZhihuishuQuestionBlock();
+    const customStatementResult = resolveCustomStatementElement(state.customStatementRule);
     const titleElement = firstVisible([
       "#task-left-panel .task-header h3",
       "#task-left-panel h3",
@@ -4296,14 +4635,8 @@
       "main",
     ]);
 
-    const title = normalizeText(
-      zhihuishuQuestion?.title || titleElement?.innerText || document.title || "未识别标题",
-    );
+    const title = normalizeText(zhihuishuQuestion?.title || titleElement?.innerText || document.title || "未识别标题");
     const questionType = normalizeText(zhihuishuQuestion?.questionType || "");
-    const statementText = normalizeText(
-      zhihuishuQuestion?.statementText || statementElement?.innerText || "",
-    );
-    const statementHtml = zhihuishuQuestion?.statementHtml || statementElement?.innerHTML || "";
     const choiceOptions = Array.isArray(zhihuishuQuestion?.choiceOptions)
       ? zhihuishuQuestion.choiceOptions
           .map((option) => ({
@@ -4311,7 +4644,25 @@
             text: normalizeText(option?.text || "").slice(0, 1200),
           }))
           .filter((option) => option.label || option.text)
-      : [];
+      : extractChoiceOptionsNearElement(customStatementResult?.element || statementElement);
+    const customStatementText = customStatementResult?.element
+      ? buildCustomStatementText(customStatementResult.element, choiceOptions)
+      : "";
+    const statementSource = customStatementResult
+      ? "custom"
+      : zhihuishuQuestion
+        ? "builtin"
+        : statementElement
+          ? "fallback"
+          : "fallback";
+    const statementText = normalizeText(
+      customStatementText ||
+        zhihuishuQuestion?.statementText ||
+        statementElement?.innerText ||
+        "",
+    );
+    const statementHtml =
+      customStatementResult?.element?.innerHTML || zhihuishuQuestion?.statementHtml || statementElement?.innerHTML || "";
     const samples = extractSamples();
     const language = detectLanguage();
     const limits = extractLimits();
@@ -4322,6 +4673,13 @@
       questionType,
       statementText: statementText.slice(0, 24000),
       statementHtml,
+      statementSource,
+      customRuleRequested: Boolean(state.customStatementRule),
+      customRuleMatched: Boolean(customStatementResult),
+      customRuleSelector: customStatementResult?.selector || "",
+      customRulePickedTag: customStatementResult?.pickedTag || state.customStatementRule?.pickedTag || "",
+      customRulePickedPreview:
+        customStatementResult?.pickedPreview || state.customStatementRule?.pickedPreview || "",
       choiceOptions,
       currentCode: editorResult.text,
       currentCodeLineCount: editorResult.text ? editorResult.text.split("\n").length : 0,
@@ -4439,6 +4797,55 @@
         };
       })
       .filter((option) => option && (option.label || option.text));
+  }
+
+  function extractChoiceOptionsNearElement(element) {
+    if (!(element instanceof Element)) {
+      return [];
+    }
+
+    const questionRoot =
+      element.closest(
+        [
+          ".questionContent",
+          ".ques-detail",
+          ".question",
+          "[class*='question']",
+          "[class*='problem-content']",
+          "[class*='question-content']",
+        ].join(", "),
+      ) || getActiveQuestionRoot();
+    if (!(questionRoot instanceof Element)) {
+      return [];
+    }
+
+    return extractZhihuishuChoiceOptions(questionRoot).map((option) => ({
+      label: normalizeText(option?.label || "").slice(0, 20),
+      text: normalizeText(option?.text || "").slice(0, 1200),
+    }));
+  }
+
+  function buildCustomStatementText(element, choiceOptions = []) {
+    if (!(element instanceof Element)) {
+      return "";
+    }
+
+    const baseText = normalizeText(element.innerText || element.textContent || "");
+    if (!baseText) {
+      return "";
+    }
+
+    const optionLines = Array.isArray(choiceOptions)
+      ? choiceOptions
+          .map((option) => [normalizeText(option?.label || ""), normalizeText(option?.text || "")].filter(Boolean).join(" "))
+          .filter(Boolean)
+      : [];
+    if (optionLines.length === 0) {
+      return baseText;
+    }
+
+    const fullText = [baseText, ...optionLines].join("\n");
+    return normalizeText(fullText);
   }
 
   function normalizeChoiceOptionLabel(value) {
@@ -4584,17 +4991,29 @@
         ? "已附带固定区域截图"
         : "已附带局部截图"
       : "未附带";
+    const extractSourceText =
+      problem.statementSource === "custom"
+        ? "自定义规则"
+        : problem.statementSource === "builtin"
+          ? "站点专用"
+          : "通用回退";
 
     renderSummaryHtml(`
       <div class="al-summary-card">
         <div class="al-summary-grid">
           ${buildSummaryRow("标题", problem.title || "未识别")}
           ${buildSummaryRow("题面长度", `${statementText.length} 字`)}
+          ${buildSummaryRow("提取来源", extractSourceText)}
           ${buildSummaryRow("当前代码", `${problem.currentCodeLineCount} 行`)}
           ${buildSummaryHint(buildCurrentCodeHint(problem))}
           ${buildSummaryRow("样例数量", `${problem.samples.length}`)}
           ${buildSummaryRow("选项数量", `${optionCount}`)}
           ${buildSummaryRow("截图", screenshotText)}
+          ${
+            problem.customRuleRequested && !problem.customRuleMatched
+              ? buildSummaryHint("当前页面自定义题面规则未命中，已自动回退到内置提取逻辑。", "warning")
+              : ""
+          }
         </div>
         <div class="al-summary-preview">
           <div class="al-summary-preview-card">
@@ -4623,12 +5042,13 @@
     `;
   }
 
-  function buildSummaryHint(text) {
+  function buildSummaryHint(text, variant = "default") {
     if (!text) {
       return "";
     }
 
-    return `<div class="al-summary-hint">${escapeHtml(text)}</div>`;
+    const variantAttr = variant && variant !== "default" ? ` data-variant="${escapeHtml(variant)}"` : "";
+    return `<div class="al-summary-hint"${variantAttr}>${escapeHtml(text)}</div>`;
   }
 
   function buildCurrentCodeHint(problem) {
@@ -4663,6 +5083,13 @@
       title: normalizeText(document.title || "未识别标题"),
       statementText: "",
       statementHtml: "",
+      statementSource: "fallback",
+      customRuleRequested: Boolean(state.customStatementRule),
+      customRuleMatched: false,
+      customRuleSelector: "",
+      customRulePickedTag: state.customStatementRule?.pickedTag || "",
+      customRulePickedPreview: state.customStatementRule?.pickedPreview || "",
+      choiceOptions: [],
       currentCode: "",
       currentCodeLineCount: 0,
       currentCodeSource: "empty",
@@ -5213,6 +5640,471 @@
     return rect.width > 0 && rect.height > 0;
   }
 
+  async function selectCustomStatementElement(hintText = "请点击要作为题面的元素，按 Esc 取消") {
+    return new Promise((resolve) => {
+      const highlight = document.createElement("div");
+      const hint = document.createElement("div");
+      let currentTarget = null;
+
+      highlight.style.cssText = [
+        "position:fixed",
+        "display:none",
+        "pointer-events:none",
+        "z-index:2147483647",
+        "border:2px solid #ffb46b",
+        "background:rgba(255,180,107,0.16)",
+        "box-shadow:0 0 0 9999px rgba(7,12,18,0.18)",
+      ].join(";");
+      hint.style.cssText = [
+        "position:fixed",
+        "top:16px",
+        "left:50%",
+        "transform:translateX(-50%)",
+        "pointer-events:none",
+        "z-index:2147483647",
+        "padding:10px 14px",
+        "border-radius:999px",
+        "font:12px/1.4 IBM Plex Sans, PingFang SC, sans-serif",
+        "color:#fff8ef",
+        "background:rgba(15,20,24,0.88)",
+        "box-shadow:0 12px 28px rgba(6,13,18,0.28)",
+      ].join(";");
+      hint.textContent = hintText;
+
+      document.documentElement.appendChild(highlight);
+      document.documentElement.appendChild(hint);
+
+      const cleanup = (result) => {
+        document.removeEventListener("keydown", onKeyDown, true);
+        document.removeEventListener("mousemove", onMouseMove, true);
+        document.removeEventListener("click", onClick, true);
+        highlight.remove();
+        hint.remove();
+        document.body.style.cursor = "";
+        resolve(result);
+      };
+
+      const updateHighlight = (target) => {
+        if (!(target instanceof Element) || target === document.documentElement || target === document.body) {
+          currentTarget = null;
+          highlight.style.display = "none";
+          return;
+        }
+        currentTarget = target;
+        const rect = target.getBoundingClientRect();
+        highlight.style.display = "block";
+        highlight.style.left = `${Math.max(rect.left, 0)}px`;
+        highlight.style.top = `${Math.max(rect.top, 0)}px`;
+        highlight.style.width = `${Math.max(rect.width, 0)}px`;
+        highlight.style.height = `${Math.max(rect.height, 0)}px`;
+      };
+
+      const onKeyDown = (event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          cleanup(null);
+        }
+      };
+
+      const onMouseMove = (event) => {
+        const target = findSelectableStatementTarget(event.target);
+        updateHighlight(target);
+      };
+
+      const onClick = (event) => {
+        if (event.button !== 0) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        const target = findSelectableStatementTarget(event.target) || currentTarget;
+        cleanup(target instanceof Element ? target : null);
+      };
+
+      document.body.style.cursor = "crosshair";
+      document.addEventListener("keydown", onKeyDown, true);
+      document.addEventListener("mousemove", onMouseMove, true);
+      document.addEventListener("click", onClick, true);
+    });
+  }
+
+  function findSelectableStatementTarget(source) {
+    const element = source instanceof Element ? source : source instanceof Node ? source.parentElement : null;
+    if (!(element instanceof Element) || element.closest(`#${HOST_ID}`)) {
+      return null;
+    }
+
+    return normalizePickedStatementElement(element);
+  }
+
+  function normalizePickedStatementElement(element) {
+    if (!(element instanceof Element)) {
+      return null;
+    }
+
+    let current = element;
+    if (current.matches("input, button, svg, path, use, i, label, span, strong, em, b")) {
+      current = current.parentElement || current;
+    }
+
+    const optionContainer = current.closest(
+      [
+        "ul.radio-view > li",
+        "ul.checkbox-view > li",
+        ".radio-view li",
+        ".checkbox-view li",
+        ".el-radio",
+        ".el-checkbox",
+        "[role='radio']",
+        "[role='checkbox']",
+        ".option-item",
+        ".answer-item",
+      ].join(", "),
+    );
+    if (optionContainer instanceof Element) {
+      current = optionContainer;
+    }
+
+    const preferredContainer = current.closest(
+      [
+        ".questionContent",
+        ".ques-detail",
+        ".question",
+        "[class*='question']",
+        "[class*='problem-content']",
+        "[class*='question-content']",
+        "#task-left-panel .markdown-body",
+        "#task-left-panel [class*='tab-panel-body']",
+        "#task-left-panel",
+        "article",
+        "main",
+        "section",
+      ].join(", "),
+    );
+    if (preferredContainer instanceof Element && isVisible(preferredContainer)) {
+      current = preferredContainer;
+    }
+
+    let best = current;
+    let cursor = current;
+    let depth = 0;
+    while (cursor instanceof Element && depth < 6) {
+      if (!cursor.closest(`#${HOST_ID}`) && isVisible(cursor)) {
+        const text = normalizeText(cursor.innerText || cursor.textContent || "");
+        if (text.length >= 30) {
+          best = cursor;
+        }
+        if (isQuestionLikeContainer(cursor, text)) {
+          best = cursor;
+          break;
+        }
+      }
+      cursor = cursor.parentElement;
+      depth += 1;
+    }
+
+    return best instanceof Element && !best.closest(`#${HOST_ID}`) ? best : null;
+  }
+
+  function isQuestionLikeContainer(element, text = "") {
+    if (!(element instanceof Element)) {
+      return false;
+    }
+
+    if (
+      element.matches(
+        [
+          ".questionContent",
+          ".ques-detail",
+          ".question",
+          "[class*='question']",
+          "[class*='problem-content']",
+          "[class*='question-content']",
+          "#task-left-panel",
+          "article",
+          "main",
+          "section",
+        ].join(", "),
+      )
+    ) {
+      return true;
+    }
+
+    if (element.querySelector("ul.radio-view, ul.checkbox-view, .radio-view, .checkbox-view")) {
+      return true;
+    }
+
+    return String(text || "").length >= 80;
+  }
+
+  function normalizeCustomStatementRule(rule) {
+    if (!rule || typeof rule !== "object") {
+      return null;
+    }
+
+    const selectorCandidates = Array.isArray(rule.selectorCandidates)
+      ? rule.selectorCandidates
+          .map((selector) => String(selector || "").trim())
+          .filter(Boolean)
+          .slice(0, 6)
+      : [];
+    if (selectorCandidates.length === 0) {
+      return null;
+    }
+
+    return {
+      scopeKey: String(rule.scopeKey || getCustomExtractScopeKey()).trim() || getCustomExtractScopeKey(),
+      selectorCandidates,
+      textPreview: normalizeText(rule.textPreview || ""),
+      pickedTag: String(rule.pickedTag || "").trim(),
+      pickedPreview: normalizeText(rule.pickedPreview || ""),
+      savedAt: String(rule.savedAt || new Date().toISOString()),
+    };
+  }
+
+  function resolveCustomStatementElement(rule) {
+    const normalizedRule = normalizeCustomStatementRule(rule);
+    if (!normalizedRule) {
+      return null;
+    }
+
+    for (const selector of normalizedRule.selectorCandidates) {
+      try {
+        const node = document.querySelector(selector);
+        if (!(node instanceof Element) || !isVisible(node) || node.closest(`#${HOST_ID}`)) {
+          continue;
+        }
+        const text = normalizeText(node.innerText || node.textContent || "");
+        if (!text) {
+          continue;
+        }
+        return {
+          element: node,
+          selector,
+          pickedTag: normalizedRule.pickedTag || node.tagName.toLowerCase(),
+          pickedPreview: normalizedRule.pickedPreview || normalizedRule.textPreview || "",
+        };
+      } catch {
+        continue;
+      }
+    }
+
+    return null;
+  }
+
+  function getUsableCustomStatementRule() {
+    const normalizedRule = normalizeCustomStatementRule(state.customStatementRule);
+    if (!normalizedRule) {
+      return null;
+    }
+
+    const resolved = resolveCustomStatementElement(normalizedRule);
+    return resolved ? normalizedRule : null;
+  }
+
+  function buildCustomSelectorCandidates(element) {
+    if (!(element instanceof Element)) {
+      return [];
+    }
+
+    const candidates = [];
+    const addCandidate = (selector) => {
+      const normalized = String(selector || "").trim();
+      if (!normalized || candidates.includes(normalized)) {
+        return;
+      }
+      candidates.push(normalized);
+    };
+
+    const id = String(element.id || "").trim();
+    if (id) {
+      addCandidate(`#${escapeCssIdentifier(id)}`);
+    }
+
+    for (const attrName of ["data-testid", "data-test", "data-qa", "name", "role", "aria-label"]) {
+      const attrValue = String(element.getAttribute(attrName) || "").trim();
+      if (!isStableAttributeValue(attrValue)) {
+        continue;
+      }
+      addCandidate(`${element.tagName.toLowerCase()}[${attrName}="${escapeAttributeSelectorValue(attrValue)}"]`);
+    }
+
+    const classSelector = buildStableClassSelector(element);
+    if (classSelector) {
+      addCandidate(classSelector);
+    }
+
+    const ancestorSelector = buildAncestorAnchoredSelector(element);
+    if (ancestorSelector) {
+      addCandidate(ancestorSelector);
+    }
+
+    const domPathSelector = buildDomPathSelector(element);
+    if (domPathSelector) {
+      addCandidate(domPathSelector);
+    }
+
+    return candidates.slice(0, 4);
+  }
+
+  function buildStableClassSelector(element) {
+    const classes = Array.from(element.classList || []).filter(isStableClassName).slice(0, 3);
+    if (classes.length === 0) {
+      return "";
+    }
+    return `${element.tagName.toLowerCase()}.${classes.map((value) => escapeCssIdentifier(value)).join(".")}`;
+  }
+
+  function buildAncestorAnchoredSelector(element) {
+    let current = element.parentElement;
+    let depth = 0;
+    while (current && depth < 4) {
+      const parentId = String(current.id || "").trim();
+      if (parentId) {
+        return buildSelectorPathFromAncestor(current, element);
+      }
+
+      const parentClasses = Array.from(current.classList || []).filter(isStableClassName).slice(0, 2);
+      if (parentClasses.length > 0) {
+        return buildSelectorPathFromAncestor(current, element);
+      }
+
+      current = current.parentElement;
+      depth += 1;
+    }
+
+    return "";
+  }
+
+  function buildDomPathSelector(element) {
+    const segments = [];
+    let current = element;
+    let depth = 0;
+
+    while (current && depth < 5 && current !== document.body) {
+      const segment = buildElementSelectorSegment(current, {
+        preferClass: depth < 2,
+        includeNth: true,
+      });
+      if (!segment) {
+        break;
+      }
+      segments.unshift(segment);
+      if (current.id) {
+        break;
+      }
+      current = current.parentElement;
+      depth += 1;
+    }
+
+    return segments.join(" > ");
+  }
+
+  function buildSelectorPathFromAncestor(ancestor, element) {
+    if (!(ancestor instanceof Element) || !(element instanceof Element)) {
+      return "";
+    }
+
+    const segments = [];
+    let current = element;
+    while (current) {
+      segments.unshift(
+        buildElementSelectorSegment(current, {
+          preferClass: current === element || current === ancestor,
+          includeNth: current !== ancestor,
+        }),
+      );
+      if (current === ancestor) {
+        break;
+      }
+      current = current.parentElement;
+    }
+
+    return current === ancestor ? segments.filter(Boolean).join(" > ") : "";
+  }
+
+  function buildElementSelectorSegment(element, options = {}) {
+    if (!(element instanceof Element)) {
+      return "";
+    }
+
+    const id = String(element.id || "").trim();
+    if (id) {
+      return `#${escapeCssIdentifier(id)}`;
+    }
+
+    const tag = element.tagName.toLowerCase();
+    const stableClasses = Array.from(element.classList || []).filter(isStableClassName).slice(0, 2);
+    if (options.preferClass && stableClasses.length > 0) {
+      return `${tag}.${stableClasses.map((value) => escapeCssIdentifier(value)).join(".")}`;
+    }
+
+    if (options.includeNth) {
+      return `${tag}:nth-of-type(${getNthOfTypeIndex(element)})`;
+    }
+
+    return tag;
+  }
+
+  function getNthOfTypeIndex(element) {
+    if (!(element instanceof Element) || !(element.parentElement instanceof Element)) {
+      return 1;
+    }
+
+    const siblings = Array.from(element.parentElement.children).filter(
+      (child) => child.tagName === element.tagName,
+    );
+    const index = siblings.indexOf(element);
+    return index >= 0 ? index + 1 : 1;
+  }
+
+  function isStableClassName(value) {
+    const text = String(value || "").trim();
+    if (!text || text.length > 48) {
+      return false;
+    }
+    if (/^(active|selected|hover|focus|open|close|show|hide|visible|hidden|disabled)$/i.test(text)) {
+      return false;
+    }
+    if (/\d{4,}/.test(text)) {
+      return false;
+    }
+    if (/[A-Fa-f0-9]{10,}/.test(text)) {
+      return false;
+    }
+    return /^[A-Za-z_][A-Za-z0-9_-]*$/.test(text);
+  }
+
+  function isStableAttributeValue(value) {
+    const text = String(value || "").trim();
+    if (!text || text.length > 60) {
+      return false;
+    }
+    if (/\s{2,}/.test(text)) {
+      return false;
+    }
+    return !/[A-Fa-f0-9]{12,}/.test(text);
+  }
+
+  function escapeCssIdentifier(value) {
+    if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
+      return CSS.escape(String(value || ""));
+    }
+    return String(value || "").replace(/[^A-Za-z0-9_-]/g, "\\$&");
+  }
+
+  function escapeAttributeSelectorValue(value) {
+    return String(value || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  }
+
+  function summarizePreviewText(value, maxLength = 220) {
+    const text = normalizeText(value);
+    if (!text) {
+      return "";
+    }
+    return text.length <= maxLength ? text : `${text.slice(0, maxLength)}...`;
+  }
+
   function installAutoClipboardSync() {
     if (state.clipboardSyncInstalled) {
       return;
@@ -5688,17 +6580,203 @@
         title: String(value.title || ""),
         statementPreview: String(value.statementPreview || ""),
         answer: rawAnswer,
-        code: rawAnswer,
+        code: promptMode === "choice" ? rawAnswer : String(value.code || rawAnswer || ""),
         summary: String(value.summary || ""),
         approach: String(value.approach || ""),
         generatedTitle: String(value.generatedTitle || ""),
         model: String(value.model || ""),
-        source: String(value.source || ""),
+        source: normalizeQuestionBankSource(value.source),
+        status: normalizeQuestionBankStatus(value.status, rawAnswer),
+        category: normalizeQuestionBankCategory(value.category),
+        pageUrl: String(value.pageUrl || ""),
+        cloudFingerprint: String(value.cloudFingerprint || ""),
+        cloudCategory: String(value.cloudCategory || ""),
+        cloudStatus: String(value.cloudStatus || ""),
         createdAt: Number.isFinite(Number(value.createdAt)) ? Number(value.createdAt) : Date.now(),
         updatedAt: Number.isFinite(Number(value.updatedAt)) ? Number(value.updatedAt) : Date.now(),
       };
     }
     return normalized;
+  }
+
+  function buildChoiceKeyFromStem(stem) {
+    const normalizedStem = normalizeQuestionStem(stem);
+    if (!normalizedStem) {
+      return "";
+    }
+    return `choice:${hashText(`choice\n${normalizedStem}`)}`;
+  }
+
+  function mergeCloudQuestionBank(cloudBank) {
+    let mergedCount = 0;
+    for (const categoryData of Array.isArray(cloudBank) ? cloudBank : []) {
+      const category = String(categoryData?.category || "").trim();
+      const questions = Array.isArray(categoryData?.questions) ? categoryData.questions : [];
+      for (const item of questions) {
+        const stem = String(item?.stem || "").trim();
+        const answer = normalizeChoiceAnswerForBank(item?.answer || "");
+        if (!stem || !answer) {
+          continue;
+        }
+        const key = buildChoiceKeyFromStem(stem);
+        if (!key) {
+          continue;
+        }
+        const existing = state.questionBank[key] || {};
+        const source = existing.source === "local" || existing.source === "imported" ? existing.source : "cloud";
+        const status = normalizeQuestionBankStatus(existing.status, existing.answer || answer);
+        const categoryValue =
+          existing.category && existing.category !== "general"
+            ? existing.category
+            : normalizeQuestionBankCategory(category);
+        state.questionBank[key] = {
+          ...existing,
+          key,
+          promptMode: "choice",
+          title: String(existing.title || stem.split("\n")[0] || "云端题库题目").slice(0, 300),
+          statementPreview: stem,
+          answer: existing.answer || answer,
+          code: existing.code || existing.answer || answer,
+          summary: String(existing.summary || "命中云端题库答案。"),
+          approach: String(existing.approach || "已同步云端题库记录，优先使用云端答案。"),
+          generatedTitle: String(existing.generatedTitle || ""),
+          model: String(existing.model || "cloud-question-bank"),
+          source,
+          status,
+          category: categoryValue,
+          pageUrl: String(existing.pageUrl || ""),
+          cloudFingerprint: String(item?.fingerprint || existing.cloudFingerprint || ""),
+          cloudCategory: category,
+          cloudStatus: "approved",
+          createdAt: existing.createdAt || Date.now(),
+          updatedAt: Date.now(),
+        };
+        mergedCount += 1;
+      }
+    }
+    return mergedCount;
+  }
+
+  function normalizeQuestionBankSource(value) {
+    const source = String(value || "").trim().toLowerCase();
+    if (source === "cloud" || source === "imported" || source === "local") {
+      return source;
+    }
+    return "local";
+  }
+
+  function normalizeQuestionBankCategory(value) {
+    const category = String(value || "").trim().toLowerCase();
+    if (QUESTION_BANK_CATEGORIES.includes(category)) {
+      return category;
+    }
+    return "general";
+  }
+
+  function getQuestionBankCategoryLabel(category) {
+    const normalized = normalizeQuestionBankCategory(category);
+    return (
+      QUESTION_BANK_CATEGORY_DEFS.find((item) => item.key === normalized)?.label ||
+      normalized
+    );
+  }
+
+  function inferQuestionBankCategory(urlOrHost) {
+    const raw = String(urlOrHost || "").trim().toLowerCase();
+    if (!raw) {
+      return "general";
+    }
+    let host = raw;
+    try {
+      host = new URL(raw).hostname.toLowerCase();
+    } catch {
+      host = raw.replace(/^https?:\/\//, "").split("/")[0];
+    }
+    if (host === "zhihuishu.com" || host.endsWith(".zhihuishu.com")) {
+      return "zhihuishu";
+    }
+    if (host === "educoder.net" || host.endsWith(".educoder.net")) {
+      return "educoder";
+    }
+    if (host === "leetcode.com" || host === "leetcode.cn" || host.endsWith(".leetcode.com") || host.endsWith(".leetcode.cn")) {
+      return "leetcode";
+    }
+    return "general";
+  }
+
+  function resolvePreferredQuestionBankCategory(problemOrUrl) {
+    const url =
+      typeof problemOrUrl === "string"
+        ? problemOrUrl
+        : String(problemOrUrl?.url || state.problem?.url || location.href || "").trim();
+    return normalizeQuestionBankCategory(inferQuestionBankCategory(url));
+  }
+
+  function inferLegacyQuestionBankCategory(entry) {
+    const promptMode =
+      entry?.promptMode === "choice" || entry?.promptMode === "code"
+        ? entry.promptMode
+        : normalizeChoiceAnswerForBank(entry?.answer || entry?.code || "")
+          ? "choice"
+          : "";
+    if (promptMode === "choice") {
+      return "zhihuishu";
+    }
+    if (promptMode === "code") {
+      return "educoder";
+    }
+    return "general";
+  }
+
+  function normalizeQuestionBankStatus(status, answer) {
+    const normalizedStatus = String(status || "").trim().toLowerCase();
+    if (normalizedStatus === "draft" || normalizedStatus === "answered") {
+      return normalizedStatus;
+    }
+    return String(answer || "").trim() ? "answered" : "draft";
+  }
+
+  function applyContributionResults(items, results, category) {
+    const resultMap = new Map();
+    for (const item of Array.isArray(results) ? results : []) {
+      const clientEntryId = String(item?.clientEntryId || "").trim();
+      if (clientEntryId) {
+        resultMap.set(clientEntryId, item);
+      }
+    }
+
+    for (const editorItem of Array.isArray(items) ? items : []) {
+      const result = resultMap.get(String(editorItem.id || ""));
+      if (!result) {
+        continue;
+      }
+      const cloudStatus =
+        result.status === "submitted" ? "submitted" : result.status === "duplicate" ? "duplicate" : "";
+      if (!cloudStatus) {
+        continue;
+      }
+      editorItem.cloudStatus = cloudStatus;
+      editorItem.cloudCategory = category;
+      editorItem.cloudFingerprint = String(result.fingerprint || "");
+      editorItem.category = normalizeQuestionBankCategory(category);
+      for (const aliasKey of Array.isArray(editorItem.keys) ? editorItem.keys : []) {
+        const existing = state.questionBank[aliasKey];
+        if (!existing) {
+          continue;
+        }
+        state.questionBank[aliasKey] = {
+          ...existing,
+          category:
+            normalizeQuestionBankCategory(existing.category) === "general"
+              ? normalizeQuestionBankCategory(category)
+              : normalizeQuestionBankCategory(existing.category),
+          cloudStatus,
+          cloudCategory: category,
+          cloudFingerprint: String(result.fingerprint || existing.cloudFingerprint || ""),
+          updatedAt: Date.now(),
+        };
+      }
+    }
   }
 
   function buildQuestionBankLookupKeys(problem, mode = "choice") {
@@ -5755,15 +6833,11 @@
           if (!candidate) {
             continue;
           }
-          const candidateStem = normalizeQuestionStem(entry.statementPreview || entry.title || "");
-          if (!candidateStem) {
+          const candidateStems = buildQuestionBankEntryCoreTexts(entry);
+          if (candidateStems.length === 0) {
             continue;
           }
-          if (
-            candidateStem === targetStem ||
-            candidateStem.includes(targetStem) ||
-            targetStem.includes(candidateStem)
-          ) {
+          if (candidateStems.some((candidateStem) => stemsLooselyMatch(targetStem, candidateStem))) {
             return {
               key: bankKey,
               keys,
@@ -5774,6 +6848,36 @@
       }
     }
     return null;
+  }
+
+  function buildQuestionBankEntryCoreTexts(entry) {
+    if (!entry || typeof entry !== "object") {
+      return [];
+    }
+
+    const candidates = [
+      extractQuestionCoreText({
+        statementText: String(entry.statementPreview || ""),
+        ocrText: "",
+      }),
+      extractQuestionCoreText({
+        statementText: String(entry.title || ""),
+        ocrText: "",
+      }),
+      normalizeQuestionStem(entry.statementPreview || ""),
+      normalizeQuestionStem(entry.title || ""),
+    ];
+
+    return Array.from(new Set(candidates.filter(Boolean)));
+  }
+
+  function stemsLooselyMatch(left, right) {
+    const a = normalizeQuestionStem(left || "");
+    const b = normalizeQuestionStem(right || "");
+    if (!a || !b) {
+      return false;
+    }
+    return a === b || a.includes(b) || b.includes(a);
   }
 
   function extractQuestionCoreText(problem) {
@@ -5880,6 +6984,10 @@
       mode === "choice"
         ? normalizeChoiceAnswerForBank(solveResult.answer || solveResult.code || "")
         : "";
+    const inferredCategory = resolvePreferredQuestionBankCategory(problem);
+    const existingCategory = normalizeQuestionBankCategory(existing?.category);
+    const finalCategory =
+      existingCategory && existingCategory !== "general" ? existingCategory : inferredCategory;
     const nextEntry = {
       key: firstKey,
       promptMode: mode === "choice" ? "choice" : "code",
@@ -5891,7 +6999,65 @@
       approach: String(solveResult.approach || ""),
       generatedTitle: String(solveResult.generatedTitle || ""),
       model: String(solveResult.model || ""),
-      source: String(options.source || "ai"),
+      source: normalizeQuestionBankSource(existing?.source || options.source || "local"),
+      status: normalizeQuestionBankStatus("answered", normalizedAnswer || solveResult.code || ""),
+      category: finalCategory,
+      pageUrl: String(problem.url || existing?.pageUrl || ""),
+      cloudFingerprint: existing?.cloudFingerprint || "",
+      cloudCategory: existing?.cloudCategory || "",
+      cloudStatus: existing?.cloudStatus || "",
+      createdAt: existing?.createdAt || now,
+      updatedAt: now,
+    };
+
+    for (const key of keys) {
+      state.questionBank[key] = {
+        ...nextEntry,
+        key,
+      };
+    }
+    await persistQuestionBank();
+  }
+
+  async function upsertQuestionBankDraftEntry(problem, mode, options = {}) {
+    if (!problem) {
+      return;
+    }
+
+    await ensureQuestionBankLoaded();
+
+    const keys = buildQuestionBankLookupKeys(problem, mode);
+    if (keys.length === 0) {
+      return;
+    }
+
+    const now = Date.now();
+    const firstKey = keys[0];
+    const existing = state.questionBank[firstKey] || state.questionBank[keys[1]] || null;
+    const existingAnswer = String(existing?.answer || existing?.code || "").trim();
+    const inferredCategory = resolvePreferredQuestionBankCategory(problem);
+    const existingCategory = normalizeQuestionBankCategory(existing?.category);
+    const finalCategory =
+      existingCategory && existingCategory !== "general" ? existingCategory : inferredCategory;
+    const nextEntry = {
+      key: firstKey,
+      promptMode: mode === "choice" ? "choice" : "code",
+      title: String(existing?.title || problem.title || "").slice(0, 300),
+      statementPreview:
+        String(existing?.statementPreview || normalizeText(problem.statementText || "").slice(0, 1600)),
+      answer: existingAnswer,
+      code: mode === "choice" ? existingAnswer : String(existing?.code || ""),
+      summary: String(existing?.summary || ""),
+      approach: String(existing?.approach || ""),
+      generatedTitle: String(existing?.generatedTitle || ""),
+      model: String(existing?.model || ""),
+      source: normalizeQuestionBankSource(existing?.source || options.source || "local"),
+      status: normalizeQuestionBankStatus(existing?.status, existingAnswer),
+      category: finalCategory,
+      pageUrl: String(problem.url || existing?.pageUrl || ""),
+      cloudFingerprint: String(existing?.cloudFingerprint || ""),
+      cloudCategory: String(existing?.cloudCategory || ""),
+      cloudStatus: String(existing?.cloudStatus || ""),
       createdAt: existing?.createdAt || now,
       updatedAt: now,
     };
@@ -5989,6 +7155,13 @@
           keys: Array.from(new Set(payload.keys || [])),
           updatedAt: Number.isFinite(Number(payload.updatedAt)) ? Number(payload.updatedAt) : 0,
           preferred: Boolean(payload.preferred),
+          source: normalizeQuestionBankSource(payload.source),
+          status: normalizeQuestionBankStatus(payload.status, payload.answer),
+          category: normalizeQuestionBankCategory(payload.category),
+          pageUrl: String(payload.pageUrl || ""),
+          cloudStatus: payload.cloudStatus || "",
+          cloudFingerprint: payload.cloudFingerprint || "",
+          cloudCategory: payload.cloudCategory || "",
         });
         return;
       }
@@ -6007,6 +7180,27 @@
       if (payload.preferred) {
         current.preferred = true;
       }
+      if (payload.cloudStatus) {
+        current.cloudStatus = payload.cloudStatus;
+      }
+      if (payload.cloudFingerprint) {
+        current.cloudFingerprint = payload.cloudFingerprint;
+      }
+      if (payload.cloudCategory) {
+        current.cloudCategory = payload.cloudCategory;
+      }
+      if (payload.source && current.source !== "local") {
+        current.source = normalizeQuestionBankSource(payload.source);
+      }
+      if (payload.status && current.status !== "answered") {
+        current.status = normalizeQuestionBankStatus(payload.status, payload.answer || current.answer);
+      }
+      if (payload.category && current.category === "general") {
+        current.category = normalizeQuestionBankCategory(payload.category);
+      }
+      if (payload.pageUrl && !current.pageUrl) {
+        current.pageUrl = String(payload.pageUrl || "");
+      }
     };
 
     const allEntries = Object.entries(state.questionBank || {});
@@ -6015,9 +7209,6 @@
         continue;
       }
       const answer = normalizeChoiceAnswerForBank(entry.answer || entry.code || "");
-      if (!answer) {
-        continue;
-      }
       const dedupeKey = hashText(
         `bank:${normalizeText(entry.title || "").toLowerCase()}\n${normalizeText(
           entry.statementPreview || "",
@@ -6030,6 +7221,13 @@
         keys: [storageKey],
         updatedAt: entry.updatedAt,
         preferred: false,
+        source: entry.source || "local",
+        status: entry.status || (answer ? "answered" : "draft"),
+        category: entry.category || inferQuestionBankCategory(entry.pageUrl || ""),
+        pageUrl: entry.pageUrl || "",
+        cloudStatus: entry.cloudStatus || "",
+        cloudFingerprint: entry.cloudFingerprint || "",
+        cloudCategory: entry.cloudCategory || "",
       });
     }
 
@@ -6046,6 +7244,10 @@
         keys: Array.isArray(queueItem.keys) ? queueItem.keys : [],
         updatedAt: Date.now(),
         preferred: true,
+        source: "local",
+        status: queueItem.answer ? "answered" : "draft",
+        category: resolvePreferredQuestionBankCategory(state.problem),
+        pageUrl: String(state.problem?.url || location.href || ""),
       });
     }
 
@@ -6063,6 +7265,8 @@
     }
 
     state.reviewModalOpen = true;
+    let activeTab = "mine";
+    let selectedCategory = resolvePreferredQuestionBankCategory(state.problem);
     const modal = document.createElement("div");
     modal.className = "al-bank-modal";
     modal.setAttribute("data-role", "question-bank-modal");
@@ -6070,41 +7274,25 @@
       <div class="al-bank-modal-card" role="dialog" aria-modal="true" aria-label="题库更正">
         <div class="al-bank-modal-head">
           <div>
-            <h3>编辑本地题库答案</h3>
-            <p>多选题目前不支持自动勾选。看完解析后，可以在这里把答案修正到本地题库，再按答案手动勾选。</p>
+            <h3>题库管理</h3>
+            <p>“我的题库”可编辑、可贡献；“云端题库”只读查看，用于本地命中。</p>
           </div>
           <button type="button" class="al-bank-modal-close" data-role="bank-close" aria-label="关闭">×</button>
         </div>
         <div class="al-bank-modal-tools">
           <div class="al-bank-modal-tool-buttons">
+            <button type="button" data-role="bank-tab-mine">我的题库</button>
+            <button type="button" data-role="bank-tab-cloud">云端题库</button>
+          </div>
+          <div class="al-bank-modal-tool-buttons">
+            <button type="button" data-role="bank-migrate-legacy">整理旧题库分类</button>
             <button type="button" data-role="bank-export">导出题库</button>
             <button type="button" data-role="bank-import">导入题库</button>
           </div>
           <div class="al-bank-save-indicator" data-role="bank-save-indicator" data-state="idle">支持自动保存</div>
         </div>
         <input type="file" data-role="bank-import-input" accept="application/json,.json" hidden />
-        <div class="al-bank-list">
-          ${!items || items.length === 0
-            ? `<div class="al-bank-empty"><p>题库暂无内容，使用插件答题后会自动记录，也可以通过上方导入题库。</p></div>`
-            : items
-                .map((item, index) => {
-                  return `
-                    <article class="al-bank-item">
-                      <p class="al-bank-item-title">${index + 1}. ${escapeHtml(item.title)}</p>
-                      <p class="al-bank-item-meta">${escapeHtml(item.statementPreview || "题面预览为空。")}</p>
-                      <div class="al-bank-item-answer">
-                        <label>答案</label>
-                        <input type="text" data-role="bank-answer-input" data-index="${index}" value="${escapeHtml(item.answer)}" placeholder="例如 A / AC / 对 / 错" />
-                      </div>
-                    </article>
-                  `;
-                })
-                .join("")}
-        </div>
-        <div class="al-bank-modal-actions">
-          <button type="button" class="al-bank-modal-cancel" data-role="bank-cancel">关闭</button>
-          ${items && items.length > 0 ? `<button type="button" class="al-bank-modal-save" data-role="bank-save">手动保存（可选）</button>` : ""}
-        </div>
+        <div data-role="bank-tab-panel"></div>
       </div>
     `;
 
@@ -6117,6 +7305,7 @@
     let saveIndicatorTimer = 0;
     const saveIndicator = modal.querySelector('[data-role="bank-save-indicator"]');
     const importInput = modal.querySelector('[data-role="bank-import-input"]');
+    const tabPanel = modal.querySelector('[data-role="bank-tab-panel"]');
 
     const setSaveIndicator = (text, stateName = "idle", autoReset = false) => {
       if (!(saveIndicator instanceof HTMLElement)) {
@@ -6163,7 +7352,16 @@
           approach: existing?.approach || "",
           generatedTitle: existing?.generatedTitle || "",
           model: existing?.model || "",
-          source: "manual-review",
+          source: normalizeQuestionBankSource(existing?.source || editorItem.source || "local"),
+          status: "answered",
+          category:
+            normalizeQuestionBankCategory(existing?.category) !== "general"
+              ? normalizeQuestionBankCategory(existing?.category)
+              : normalizeQuestionBankCategory(editorItem.category),
+          pageUrl: String(existing?.pageUrl || editorItem.pageUrl || ""),
+          cloudFingerprint: existing?.cloudFingerprint || editorItem.cloudFingerprint || "",
+          cloudCategory: existing?.cloudCategory || editorItem.cloudCategory || "",
+          cloudStatus: existing?.cloudStatus || editorItem.cloudStatus || "",
           createdAt: existing?.createdAt || now,
           updatedAt: now,
         };
@@ -6179,6 +7377,7 @@
 
       if (changed) {
         editorItem.answer = normalizedAnswer;
+        editorItem.status = "answered";
       }
       return changed;
     };
@@ -6241,8 +7440,134 @@
       autoSaveTimers.set(index, timer);
     };
 
+    const getVisibleItems = () =>
+      (Array.isArray(items) ? items : []).filter((item) => {
+        const tabMatch = activeTab === "mine" ? item.source !== "cloud" : item.source === "cloud";
+        const categoryMatch = normalizeQuestionBankCategory(item.category) === selectedCategory;
+        return tabMatch && categoryMatch;
+      });
+
+    const renderTabButtons = () => {
+      const mineButton = modal.querySelector('[data-role="bank-tab-mine"]');
+      const cloudButton = modal.querySelector('[data-role="bank-tab-cloud"]');
+      if (mineButton instanceof HTMLElement) {
+        mineButton.setAttribute("data-active", activeTab === "mine" ? "true" : "false");
+      }
+      if (cloudButton instanceof HTMLElement) {
+        cloudButton.setAttribute("data-active", activeTab === "cloud" ? "true" : "false");
+      }
+    };
+
+    const renderTabPanel = () => {
+      if (!(tabPanel instanceof HTMLElement)) {
+        return;
+      }
+
+      const visibleItems = getVisibleItems();
+      const isMineTab = activeTab === "mine";
+      tabPanel.innerHTML = `
+        ${
+          isMineTab
+            ? `<div class="al-bank-modal-tools">
+                <div class="al-bank-modal-tool-buttons">
+                  <select data-role="bank-category-select">
+                    ${QUESTION_BANK_CATEGORY_DEFS.map(
+                      (category) =>
+                        `<option value="${category.key}" ${category.key === selectedCategory ? "selected" : ""}>${category.label}</option>`,
+                    ).join("")}
+                  </select>
+                  <button type="button" data-role="bank-select-all">全选可贡献题</button>
+                </div>
+              </div>`
+            : `<div class="al-bank-empty"><p>云端题库只读展示，会在本地直接参与匹配，不会出现在贡献列表里。</p></div>`
+        }
+        <div class="al-bank-list">
+          ${
+            visibleItems.length === 0
+              ? `<div class="al-bank-empty"><p>${isMineTab ? `当前分类下还没有${getQuestionBankCategoryLabel(selectedCategory)}题库；先点“提取题面”或导入题库。` : `当前分类下还没有${getQuestionBankCategoryLabel(selectedCategory)}云端题库；可以先点面板里的“同步云端”。`}</p></div>`
+              : visibleItems
+                  .map((item, index) => {
+                    const globalIndex = items.indexOf(item);
+                    const categoryValue = normalizeQuestionBankCategory(item.category);
+                    const canContribute =
+                      isMineTab &&
+                      item.source === "local" &&
+                      item.status === "answered" &&
+                      categoryValue === selectedCategory;
+                    const sourceText =
+                      item.source === "cloud" ? "云端同步" : item.source === "imported" ? "手动导入" : "本地提取";
+                    const statusText = item.status === "draft" ? "待补答案" : "已有答案";
+                    const cloudStatusText =
+                      item.cloudStatus === "approved"
+                        ? "云端已收录"
+                        : item.cloudStatus === "submitted"
+                          ? "已提交待整理"
+                          : item.cloudStatus === "duplicate"
+                            ? "云端疑似重复"
+                            : "未上传";
+                    return `
+                      <article class="al-bank-item">
+                        ${
+                          isMineTab
+                            ? `<label class="al-bank-item-pick">
+                                <input type="checkbox" data-role="bank-pick-input" data-index="${globalIndex}" ${canContribute ? "" : "disabled"} />
+                                <span>${canContribute ? "贡献" : "不可贡献"}</span>
+                              </label>`
+                            : ""
+                        }
+                        <p class="al-bank-item-title">${index + 1}. ${escapeHtml(item.title)}</p>
+                        <p class="al-bank-item-meta">${escapeHtml(item.statementPreview || "题面预览为空。")}</p>
+                        <p class="al-bank-item-meta">分类：${escapeHtml(getQuestionBankCategoryLabel(categoryValue))} / 来源：${escapeHtml(sourceText)} / 状态：${escapeHtml(statusText)} / 云端：${escapeHtml(cloudStatusText)}</p>
+                        <div class="al-bank-item-answer">
+                          <label>答案</label>
+                          <input type="text" data-role="bank-answer-input" data-index="${globalIndex}" value="${escapeHtml(item.answer)}" placeholder="例如 A / AC / 对 / 错" ${isMineTab ? "" : "disabled"} />
+                        </div>
+                      </article>
+                    `;
+                  })
+                  .join("")
+          }
+        </div>
+        <div class="al-bank-modal-actions">
+          <button type="button" class="al-bank-modal-cancel" data-role="bank-cancel">关闭</button>
+          ${isMineTab && visibleItems.length > 0 ? `<button type="button" class="al-bank-modal-save" data-role="bank-submit">贡献选中题目</button>` : ""}
+          ${isMineTab && visibleItems.length > 0 ? `<button type="button" class="al-bank-modal-save" data-role="bank-save">手动保存（可选）</button>` : ""}
+        </div>
+      `;
+
+      const answerInputs = Array.from(tabPanel.querySelectorAll("input[data-role='bank-answer-input']"));
+      for (const input of answerInputs) {
+        if (!(input instanceof HTMLInputElement) || input.disabled) {
+          continue;
+        }
+        input.addEventListener("input", () => {
+          scheduleAutoSave(input);
+        });
+        input.addEventListener("blur", () => {
+          void flushAutoSaveTimer(input);
+        });
+        input.addEventListener("keydown", (event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            void flushAutoSaveTimer(input);
+            input.blur();
+          }
+        });
+      }
+
+      const categorySelect = tabPanel.querySelector('[data-role="bank-category-select"]');
+      if (categorySelect instanceof HTMLSelectElement) {
+        categorySelect.addEventListener("change", () => {
+          selectedCategory = normalizeQuestionBankCategory(categorySelect.value);
+          renderTabPanel();
+        });
+      }
+
+      renderTabButtons();
+    };
+
     const onSave = async () => {
-      const answerInputs = Array.from(modal.querySelectorAll("input[data-role='bank-answer-input']"));
+      const answerInputs = Array.from(tabPanel.querySelectorAll("input[data-role='bank-answer-input']"));
       let updatedCount = 0;
 
       setSaveIndicator("保存中...", "saving");
@@ -6274,6 +7599,10 @@
           title: entry.title || "",
           statementPreview: entry.statementPreview || "",
           answer: entry.answer || entry.code || "",
+          source: normalizeQuestionBankSource(entry.source),
+          status: normalizeQuestionBankStatus(entry.status, entry.answer || entry.code || ""),
+          category: normalizeQuestionBankCategory(entry.category),
+          pageUrl: String(entry.pageUrl || ""),
         };
       }
       
@@ -6306,6 +7635,11 @@
             ? parsed.questionBank
             : parsed;
         const normalized = normalizeQuestionBankMap(rawQuestionBank);
+        for (const entry of Object.values(normalized)) {
+          entry.source = entry.source === "cloud" ? "cloud" : "imported";
+          entry.status = normalizeQuestionBankStatus(entry.status, entry.answer || entry.code || "");
+          entry.category = normalizeQuestionBankCategory(entry.category || inferQuestionBankCategory(entry.pageUrl || ""));
+        }
         const importedKeys = Object.keys(normalized);
         if (importedKeys.length === 0) {
           throw new Error("导入文件里没有可用的题库数据。");
@@ -6317,6 +7651,9 @@
         };
         state.questionBankLoaded = true;
         await persistQuestionBank();
+        const latestItems = buildQuestionBankEditorItems();
+        items.splice(0, items.length, ...latestItems);
+        renderTabPanel();
         setStatus(`题库导入成功，共合并 ${importedKeys.length} 条记录。`);
         showToast(`题库已导入 ${importedKeys.length} 条。`);
         setSaveIndicator(`已导入 ${importedKeys.length} 条`, "saved", true);
@@ -6328,25 +7665,119 @@
       }
     };
 
-    const answerInputs = Array.from(modal.querySelectorAll("input[data-role='bank-answer-input']"));
-    for (const input of answerInputs) {
-      if (!(input instanceof HTMLInputElement)) {
-        continue;
-      }
-      input.addEventListener("input", () => {
-        scheduleAutoSave(input);
-      });
-      input.addEventListener("blur", () => {
-        void flushAutoSaveTimer(input);
-      });
-      input.addEventListener("keydown", (event) => {
-        if (event.key === "Enter") {
-          event.preventDefault();
-          void flushAutoSaveTimer(input);
-          input.blur();
+    const migrateLegacyQuestionBankCategories = async () => {
+      await ensureQuestionBankLoaded();
+      const entries = Object.entries(state.questionBank || {});
+      let migratedCount = 0;
+
+      for (const [storageKey, entry] of entries) {
+        if (!entry || typeof entry !== "object") {
+          continue;
         }
+        if (normalizeQuestionBankSource(entry.source) === "cloud") {
+          continue;
+        }
+        const currentCategory = normalizeQuestionBankCategory(entry.category);
+        if (currentCategory !== "general") {
+          continue;
+        }
+
+        const nextCategory = inferLegacyQuestionBankCategory(entry);
+        if (nextCategory === "general") {
+          continue;
+        }
+
+        state.questionBank[storageKey] = {
+          ...entry,
+          source: normalizeQuestionBankSource(entry.source || "local"),
+          status: normalizeQuestionBankStatus(entry.status, entry.answer || entry.code || ""),
+          category: nextCategory,
+          pageUrl: String(entry.pageUrl || ""),
+          updatedAt: Date.now(),
+        };
+        migratedCount += 1;
+      }
+
+      if (migratedCount === 0) {
+        setStatus("没有可整理的旧题库分类。");
+        showToast("旧题库分类已经是最新。");
+        return;
+      }
+
+      await persistQuestionBank();
+      const latestItems = buildQuestionBankEditorItems();
+      items.splice(0, items.length, ...latestItems);
+      renderTabPanel();
+      setStatus(`旧题库分类整理完成，共迁移 ${migratedCount} 条。选择题已归到智慧树，代码题已归到 Educoder。`);
+      showToast(`已整理 ${migratedCount} 条旧题库分类。`);
+    };
+
+    const submitContributions = async () => {
+      const categorySelect = modal.querySelector('[data-role="bank-category-select"]');
+      const submitCategory =
+        categorySelect instanceof HTMLSelectElement
+          ? normalizeQuestionBankCategory(categorySelect.value)
+          : normalizeQuestionBankCategory(selectedCategory);
+      const pickedInputs = Array.from(tabPanel.querySelectorAll("input[data-role='bank-pick-input']:checked"));
+      if (pickedInputs.length === 0) {
+        setStatus("请先勾选要贡献的题目。");
+        return;
+      }
+
+      const entries = pickedInputs
+        .map((input) => {
+          const index = Number(input.getAttribute("data-index"));
+          const item = items[index];
+          if (!item) {
+            return null;
+          }
+          if (
+            item.source !== "local" ||
+            item.status !== "answered" ||
+            normalizeQuestionBankCategory(item.category) !== submitCategory
+          ) {
+            return null;
+          }
+          return {
+            clientEntryId: item.id,
+            stem: String(item.statementPreview || item.title || "").trim(),
+            answer: normalizeChoiceAnswerForBank(item.answer || ""),
+            sourceMeta: {
+              title: item.title,
+              category: normalizeQuestionBankCategory(item.category),
+              source: "extension-question-bank",
+              site: location.hostname || "",
+              pageUrl: location.href,
+            },
+          };
+        })
+        .filter(Boolean);
+
+      if (entries.length === 0) {
+        setStatus("当前选中的题目没有可提交内容。");
+        return;
+      }
+
+      setSaveIndicator("提交贡献中...", "saving");
+      const response = await sendMessage({
+        type: "autolearning:submit-contribution",
+        category: submitCategory,
+        entries,
       });
-    }
+      if (!response?.ok) {
+        throw new Error(response?.error || "贡献提交失败");
+      }
+
+      const results = Array.isArray(response.result?.results) ? response.result.results : [];
+      applyContributionResults(items, results, submitCategory);
+      await persistQuestionBank();
+      renderTabPanel();
+      setSaveIndicator("贡献已提交", "saved", true);
+      const submittedCount = results.filter((item) => item.status === "submitted").length;
+      const duplicateCount = results.filter((item) => item.status === "duplicate").length;
+      setStatus(`贡献提交完成：待审核 ${submittedCount} 条，重复 ${duplicateCount} 条。`);
+      showToast(`贡献完成：待审核 ${submittedCount} 条，重复 ${duplicateCount} 条。`);
+    };
 
     modal.addEventListener("click", (event) => {
       const target = event.target;
@@ -6355,6 +7786,12 @@
       }
       if (target.getAttribute("data-role") === "bank-export") {
         void exportQuestionBank();
+        return;
+      }
+      if (target.getAttribute("data-role") === "bank-migrate-legacy") {
+        void migrateLegacyQuestionBankCategories().catch((error) => {
+          setStatus(error instanceof Error ? error.message : String(error));
+        });
         return;
       }
       if (target.getAttribute("data-role") === "bank-import") {
@@ -6368,8 +7805,34 @@
         closeModal();
         return;
       }
+      if (target.getAttribute("data-role") === "bank-tab-mine") {
+        activeTab = "mine";
+        renderTabPanel();
+        return;
+      }
+      if (target.getAttribute("data-role") === "bank-tab-cloud") {
+        activeTab = "cloud";
+        renderTabPanel();
+        return;
+      }
       if (target.getAttribute("data-role") === "bank-save") {
         void onSave();
+        return;
+      }
+      if (target.getAttribute("data-role") === "bank-select-all") {
+        const pickInputs = Array.from(tabPanel.querySelectorAll("input[data-role='bank-pick-input']"));
+        for (const input of pickInputs) {
+          if (input instanceof HTMLInputElement) {
+            input.checked = !input.disabled;
+          }
+        }
+        return;
+      }
+      if (target.getAttribute("data-role") === "bank-submit") {
+        void submitContributions().catch((error) => {
+          setSaveIndicator("提交失败", "idle", true);
+          setStatus(error instanceof Error ? error.message : String(error));
+        });
       }
     });
 
@@ -6382,6 +7845,7 @@
       });
     }
 
+    renderTabPanel();
     document.documentElement.appendChild(modal);
   }
 
